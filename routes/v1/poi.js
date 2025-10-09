@@ -38,25 +38,36 @@ function pluralizeCategoryFr(category) {
   return exceptions[category.toLowerCase()] || category + 's';
 }
 
-// ==== Cursor helpers ====
-function encodeCursor(offset) {
-  return Buffer.from(String(offset), 'utf8').toString('base64');
+// ==== Keyset pagination helpers (score + id) ====
+function encodeKeysetCursor(obj) {
+  return Buffer.from(JSON.stringify(obj), 'utf8').toString('base64');
 }
 
-function decodeCursor(b64) {
-  try {
-    return parseInt(Buffer.from(String(b64 || ''), 'base64').toString('utf8'), 10) || 0;
-  } catch {
-    return 0;
+function decodeKeysetCursor(b64) {
+  try { 
+    return JSON.parse(Buffer.from(String(b64 || ''), 'base64').toString('utf8')); 
+  } catch { 
+    return null; 
   }
 }
+
+// Prix -> enum text pour l'arg p_price_level
+const PRICE_MAP = {
+  '€': 'PRICE_LEVEL_INEXPENSIVE',
+  '€€': 'PRICE_LEVEL_MODERATE',
+  '€€€': 'PRICE_LEVEL_EXPENSIVE',
+  '€€€€': 'PRICE_LEVEL_VERY_EXPENSIVE'
+};
+
+// Title-case simple pour transformer des slugs en labels
+const capFromSlug = (s) => s
+  ? s.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  : null;
 
 // ==== Image variant helpers ====
 // Returns full photo block with variants or a master fallback
 function photoBlockFrom(variantsIndex, photo, wantedKeyPrefix) {
   const photoVariants = variantsIndex[photo.id] || [];
-  console.log(`DEBUG photoBlockFrom: photo.id=${photo.id}, wantedKeyPrefix=${wantedKeyPrefix}, available variants:`, 
-    photoVariants.map(v => `${v.variant_key}:${v.format}`));
   
   const variants = photoVariants
     .filter(v => v.variant_key.startsWith(wantedKeyPrefix))
@@ -76,8 +87,6 @@ function photoBlockFrom(variantsIndex, photo, wantedKeyPrefix) {
       width: v.width, 
       height: v.height 
     }));
-  
-  console.log(`DEBUG photoBlockFrom: filtered variants for ${wantedKeyPrefix}:`, variants.length);
   if (variants.length) {
     return {
       variants,
@@ -110,114 +119,6 @@ function buildNeighbourhoodSlug(neighbourhoodName) {
 }
 
 // ==== BUSINESS LOGIC ====
-
-// Builds base Supabase query with filters
-function buildBaseQuery(fastify, filters, lang) {
-  let query = fastify.supabase
-    .from('poi')
-    .select(`
-      id,
-      google_place_id,
-      city_slug,
-      name,
-      name_en,
-      name_fr,
-      slug_en,
-      slug_fr,
-      category,
-      address_street,
-      city,
-      country,
-      lat,
-      lng,
-      opening_hours,
-      price_level,
-      phone,
-      website,
-      district_name,
-      neighbourhood_name,
-      publishable_status,
-      ai_summary,
-      ai_summary_en,
-      ai_summary_fr,
-      tags,
-      created_at,
-      updated_at
-    `)
-    .eq('publishable_status', 'eligible');
-
-  // City filter
-  if (filters.city && filters.city !== 'paris') {
-    query = query.eq('city_slug', filters.city);
-  } else {
-    query = query.eq('city_slug', 'paris');
-  }
-
-  if (filters.category) {
-    query = query.eq('category', filters.category);
-  }
-
-  if (filters.price) {
-    const priceMap = {
-      '€': 'PRICE_LEVEL_INEXPENSIVE',
-      '€€': 'PRICE_LEVEL_MODERATE',
-      '€€€': 'PRICE_LEVEL_EXPENSIVE',
-      '€€€€': 'PRICE_LEVEL_VERY_EXPENSIVE'
-    };
-    if (priceMap[filters.price]) {
-      query = query.eq('price_level', priceMap[filters.price]);
-    }
-  }
-
-  if (filters.neighbourhood_slug) {
-    // Convert slug to approximate name for search
-    const neighbourhoodName = filters.neighbourhood_slug
-      .split('-')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-    query = query.ilike('neighbourhood_name', `%${neighbourhoodName}%`);
-  }
-
-  if (filters.district_slug) {
-    // Convert slug to approximate name for search
-    const districtName = filters.district_slug
-      .split('-')
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' ');
-    query = query.ilike('district_name', `%${districtName}%`);
-  }
-
-  if (filters.tags) {
-    const tagList = filters.tags.split(',').map(t => t.trim());
-    // Search in JSONB tags - PostgREST syntax
-    for (const tag of tagList) {
-      query = query.contains('tags', `"${tag}"`);
-    }
-  }
-
-  return query;
-}
-
-// Enriches POIs with latest scores
-async function enrichWithScores(fastify, poiIds, segment) {
-  if (!poiIds.length) return {};
-
-  const { data: scoresData } = await fastify.supabase
-    .from('gatto_scores')
-    .select('poi_id, gatto_score, digital_score, awards_bonus, freshness_bonus, calculated_at')
-    .in('poi_id', poiIds)
-    .order('calculated_at', { ascending: false });
-
-  // Deduplicate to keep latest score per poi
-  const latestScores = {};
-  scoresData?.forEach(score => {
-    if (!latestScores[score.poi_id]) {
-      latestScores[score.poi_id] = score;
-    }
-  });
-
-  return latestScores;
-}
 
 // Enriches POIs with photos and variants
 async function enrichWithPhotos(fastify, poiIds, variantKeys = ['card_sq']) {
@@ -265,27 +166,6 @@ async function enrichWithPhotos(fastify, poiIds, variantKeys = ['card_sq']) {
   return { photos: photosByPoi, variants: variantsByPhoto };
 }
 
-// Enriches POIs with latest Google ratings
-async function enrichWithRatings(fastify, poiIds) {
-  if (!poiIds.length) return {};
-
-  const { data: ratingsData } = await fastify.supabase
-    .from('rating_snapshot')
-    .select('poi_id, rating_value, reviews_count')
-    .in('poi_id', poiIds)
-    .eq('source_id', 'google')
-    .order('captured_at', { ascending: false });
-
-  // Deduplicate to keep latest rating per poi
-  const latestRatings = {};
-  ratingsData?.forEach(rating => {
-    if (!latestRatings[rating.poi_id]) {
-      latestRatings[rating.poi_id] = rating;
-    }
-  });
-
-  return latestRatings;
-}
 
 // Enriches POIs with mentions data
 async function enrichWithMentions(fastify, poiIds, includeDetails = false) {
@@ -294,20 +174,30 @@ async function enrichWithMentions(fastify, poiIds, includeDetails = false) {
   // Count distinct domains per poi
   const { data: mentionsCount } = await fastify.supabase
     .from('ai_mention')
-    .select('poi_id, domain')
+    .select('poi_id, domain, url, title')
     .in('poi_id', poiIds)
     .eq('ai_decision', 'ACCEPT');
 
   const countsByPoi = {};
   const domainsByPoi = {};
+  const mentionsByDomain = {};
 
   mentionsCount?.forEach(mention => {
     if (!countsByPoi[mention.poi_id]) {
       countsByPoi[mention.poi_id] = new Set();
       domainsByPoi[mention.poi_id] = new Set();
+      mentionsByDomain[mention.poi_id] = new Map();
     }
     countsByPoi[mention.poi_id].add(mention.domain);
     domainsByPoi[mention.poi_id].add(mention.domain);
+    
+    // Store one mention per domain for url and title
+    if (!mentionsByDomain[mention.poi_id].has(mention.domain)) {
+      mentionsByDomain[mention.poi_id].set(mention.domain, {
+        url: mention.url,
+        title: mention.title
+      });
+    }
   });
 
   // Convert Sets to counts and sample domains
@@ -316,10 +206,15 @@ async function enrichWithMentions(fastify, poiIds, includeDetails = false) {
     const domains = Array.from(domainsByPoi[poiId]);
     result[poiId] = {
       sources_count: countsByPoi[poiId].size,
-      sources_sample: domains.map(domain => ({
-        domain,
-        favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=64`
-      }))
+      sources_sample: domains.map(domain => {
+        const mentionData = mentionsByDomain[poiId].get(domain);
+        return {
+          domain,
+          favicon: `https://www.google.com/s2/favicons?domain=${domain}&sz=64`,
+          url: mentionData?.url || null,
+          title: mentionData?.title || null
+        };
+      })
     };
   });
 
@@ -380,28 +275,6 @@ function buildBreadcrumb(poi, lang) {
   return breadcrumb;
 }
 
-// Sorts items by segment or default (Gatto score)
-function sortItemsBySegment(items, segment) {
-  if (segment === 'digital') {
-    return items.sort((a, b) => (b.scores?.digital ?? -1) - (a.scores?.digital ?? -1));
-  }
-  if (segment === 'awarded') {
-    return items.sort((a, b) => {
-      const byAwards = (b.scores?.awards_bonus ?? -1) - (a.scores?.awards_bonus ?? -1);
-      if (byAwards !== 0) return byAwards;
-      return (b.scores?.gatto ?? -1) - (a.scores?.gatto ?? -1);
-    });
-  }
-  if (segment === 'fresh') {
-    return items.sort((a, b) => {
-      const byFresh = (b.scores?.freshness_bonus ?? -1) - (a.scores?.freshness_bonus ?? -1);
-      if (byFresh !== 0) return byFresh;
-      return (b.scores?.gatto ?? -1) - (a.scores?.gatto ?? -1);
-    });
-  }
-  // Default: best Gatto score first
-  return items.sort((a, b) => (b.scores?.gatto ?? -1) - (a.scores?.gatto ?? -1));
-}
 
 // Filters object fields based on requested fields
 function filterFields(data, fields) {
@@ -432,98 +305,151 @@ function filterFields(data, fields) {
 
 export default async function poiRoutes(fastify, opts) {
   
-  // GET /v1/poi - Paginated list
+  // GET /v1/poi - Paginated list with RPC
   fastify.get('/poi', async (request, reply) => {
     try {
       const lang = fastify.getLang(request);
+
       const {
         view = 'card',
-        segment,
-        category,
-        neighbourhood_slug,
-        district_slug,
-        tags,
-        price,
+        segment,                         // 'gatto' | 'digital' | 'awarded' | 'fresh' (optionnel)
+        category,                        // string (enum côté DB)
+        neighbourhood_slug,              // ex: 'haut-marais'
+        district_slug,                   // ex: '10e-arrondissement'
+        tags,                            // ex: 'trendy,modern' (AND logique)
+        tags_any,                        // ex: 'terrace,michelin' (OR logique)
+        price,                           // '€'| '€€' | ...
         city = 'paris',
         limit = 24,
-        cursor,
-        fields
+        cursor,                          // keyset base64 {score,id}
+        fields                           // ex: 'scores,rating,tags'
       } = request.query;
 
-      // Validation
-      const maxLimit = Math.min(Math.max(parseInt(limit, 10), 1), 50);
-      const offset = decodeCursor(cursor);
+      // bornes défensives
+      const maxLimit = Math.min(Math.max(parseInt(limit, 10) || 24, 1), 50);
 
-      const filters = {
-        city,
-        category,
-        neighbourhood_slug,
-        district_slug,
-        tags,
-        price
+      // normalisations
+      const neighbourhoodName = capFromSlug(neighbourhood_slug);
+      const districtName = capFromSlug(district_slug);
+      const priceLevel = price ? (PRICE_MAP[price] || null) : null;
+
+      // Parsing des tags pour filtrage AND/OR
+      const tagsAll = tags
+        ? tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+        : null;
+
+      const tagsAny = tags_any
+        ? tags_any.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
+        : null;
+
+      // on unifie: branche unique par RPC (même sans segment -> défaut géré côté SQL)
+      const after = decodeKeysetCursor(cursor);
+      const segCol =
+        segment === 'digital' ? 'digital_score' :
+        segment === 'awarded' ? 'awards_bonus' :
+        segment === 'fresh'   ? 'freshness_bonus' :
+                                'gatto_score';
+
+      const rpcParams = {
+        p_city_slug: city || 'paris',
+        p_category: category || null,
+        p_price_level: priceLevel,
+        p_neighbourhood: neighbourhoodName,
+        p_district: districtName,
+        p_tags_all: tagsAll,               // filtrage AND logique
+        p_segment: segment || 'gatto',     // défaut unifié
+        p_limit: maxLimit,
+        p_after_score: after?.score ?? null,
+        p_after_id: after?.id ?? null,
+        p_tags_any: tagsAny                // filtrage OR logique
       };
 
-      // Build base query - fetch more than needed for proper sorting
-      let query = buildBaseQuery(fastify, filters, lang);
-      
-      // For segments, we need to fetch more data to sort properly
-      const fetchLimit = segment ? Math.min(maxLimit * 3, 150) : maxLimit;
-      query = query.range(0, fetchLimit - 1);
-
-      // Execute main query
-      const { data: pois, error } = await query;
-      
+      const { data: rows, error } = await fastify.supabase.rpc('list_pois_segment', rpcParams);
       if (error) {
-        fastify.log.error('Error fetching POIs:', error);
+        fastify.log.error('RPC list_pois_segment error:', error);
         return reply.error('Failed to fetch POIs', 500);
       }
 
-      if (!pois?.length) {
-        return reply.success({
-          items: [],
-          next_cursor: null,
-          previous_cursor: null
-        });
+      // rows = POI + derniers scores déjà joints
+      // Prépare un map pour les scores, et une liste POI nettoyée (sans colonnes de score)
+      const poiScores = {};
+      const pois = rows.map(r => {
+        poiScores[r.id] = {
+          poi_id: r.id,
+          gatto_score: Number(r.gatto_score ?? 0),
+          digital_score: Number(r.digital_score ?? 0),
+          awards_bonus: Number(r.awards_bonus ?? 0),
+          freshness_bonus: Number(r.freshness_bonus ?? 0),
+          calculated_at: r.calculated_at
+        };
+
+        // NE PAS jeter tags_flat ici
+        const {
+          gatto_score, digital_score, awards_bonus, freshness_bonus, calculated_at,
+          ...poiData
+        } = r;
+
+        return poiData; // poiData contient encore tags_flat
+      });
+
+      // next_cursor (keyset) si page pleine
+      let nextCursor = null;
+      if (pois.length === maxLimit) {
+        const last = rows[rows.length - 1];
+        nextCursor = encodeKeysetCursor({ score: Number(last[segCol] ?? 0), id: last.id });
       }
 
+      // Enrichissements: photos, ratings (vue), mentions
       const poiIds = pois.map(p => p.id);
+      const variantKeys = view === 'card'
+        ? ['card_sq@1x', 'card_sq@2x']
+        : ['card_sq@1x', 'card_sq@2x', 'detail@1x', 'detail@2x', 'thumb_small@1x', 'thumb_small@2x'];
 
-      // Parallel enrichment - use exact variant keys
-      const variantKeys = view === 'card' ? 
-        ['card_sq@1x', 'card_sq@2x'] : 
-        ['card_sq@1x', 'card_sq@2x', 'detail@1x', 'detail@2x', 'thumb_small@1x', 'thumb_small@2x'];
-      
-      const [scores, photosData, ratings, mentions] = await Promise.all([
-        enrichWithScores(fastify, poiIds, segment),
+      const [photosData, ratings, mentions] = await Promise.all([
         enrichWithPhotos(fastify, poiIds, variantKeys),
-        enrichWithRatings(fastify, poiIds),
+
+        // ratings depuis la vue 'public.latest_google_rating'
+        (async () => {
+          if (!poiIds.length) return {};
+          const { data, error } = await fastify.supabase
+            .from('latest_google_rating')
+            .select('poi_id, rating_value, reviews_count')
+            .in('poi_id', poiIds);
+
+          if (error) {
+            fastify.log.warn('latest_google_rating fetch error:', error);
+            return {};
+          }
+          const m = {};
+          (data || []).forEach(r => { m[r.poi_id] = r; });
+          return m;
+        })(),
+
         enrichWithMentions(fastify, poiIds, false)
       ]);
 
-      // Build items with enriched data
+      // Construction des items (card|detail, champs optionnels)
       const enrichedItems = pois.map(poi => {
-        const score = scores[poi.id];
+        const score = poiScores[poi.id];
+
+        // Photo principale (ou fallback 1ère)
         const poiPhotos = photosData.photos[poi.id] || [];
         const primaryPhoto = poiPhotos.find(p => p.is_primary) || poiPhotos[0];
-        const rating = ratings[poi.id];
-        const mentionData = mentions[poi.id];
 
-        // Photo with all variants
         let photo = null;
         if (primaryPhoto) {
-          const photoBlock = photoBlockFrom(photosData.variants, primaryPhoto, 'card_sq');
-          if (photoBlock) {
+          const block = photoBlockFrom(photosData.variants, primaryPhoto, 'card_sq');
+          if (block) {
             photo = {
-              variants: photoBlock.variants,
-              width: (photoBlock.variants[0] && photoBlock.variants[0].width) || null,
-              height: (photoBlock.variants[0] && photoBlock.variants[0].height) || null,
-              dominant_color: photoBlock.dominant_color,
-              blurhash: photoBlock.blurhash
+              variants: block.variants,
+              width: block.variants[0]?.width ?? null,
+              height: block.variants[0]?.height ?? null,
+              dominant_color: block.dominant_color,
+              blurhash: block.blurhash
             };
           }
         }
 
-        // Base item data
         const item = {
           id: poi.id,
           slug: pickLang(poi, lang, 'slug'),
@@ -533,16 +459,10 @@ export default async function poiRoutes(fastify, opts) {
           neighbourhood: poi.neighbourhood_name
         };
 
-        // Photo
-        if (photo) {
-          item.photo = photo;
-        }
+        if (photo) item.photo = photo;
 
-        // Scores
         if (score) {
           item.score = score.gatto_score;
-          
-          // Detailed scores if requested
           if (!fields || fields.includes('scores')) {
             item.scores = {
               gatto: score.gatto_score,
@@ -553,7 +473,7 @@ export default async function poiRoutes(fastify, opts) {
           }
         }
 
-        // Google rating
+        const rating = ratings[poi.id];
         if (rating) {
           item.rating = {
             google: rating.rating_value,
@@ -561,70 +481,57 @@ export default async function poiRoutes(fastify, opts) {
           };
         }
 
-        // Mentions
+        const mentionData = mentions[poi.id];
         if (mentionData) {
           item.sources_count = mentionData.sources_count;
           item.sources_sample = mentionData.sources_sample;
         }
 
-        // Additional fields for detail view
+        // Inclure tags_flat si demandé dans fields
+        if (!fields || fields.includes('tags') || fields.includes('tags_flat')) {
+          item.tags_flat = poi.tags_flat || null;
+        }
+
         if (view === 'detail') {
           item.summary = pickLang(poi, lang, 'ai_summary');
-          item.coords = { lat: poi.lat, lng: poi.lng };
+          item.coords = { lat: Number(poi.lat), lng: Number(poi.lng) };
           item.price_level = poi.price_level;
           item.opening_hours = poi.opening_hours;
-          
-          // Gallery for detail view
-          if (poiPhotos.length > 1) {
-            const galleryPhotos = poiPhotos
-              .filter(p => !p.is_primary)
-              .slice(0, 5)
-              .map(p => {
-                const galleryBlock = photoBlockFrom(photosData.variants, p, 'thumb_small');
-                return galleryBlock ? {
-                  variants: galleryBlock.variants,
-                  width: (galleryBlock.variants[0] && galleryBlock.variants[0].width) || null,
-                  height: (galleryBlock.variants[0] && galleryBlock.variants[0].height) || null,
-                  dominant_color: galleryBlock.dominant_color,
-                  blurhash: galleryBlock.blurhash
-                } : null;
-              })
-              .filter(Boolean);
-            
-            if (galleryPhotos.length) {
-              item.photos = {
-                primary: photo,
-                gallery: galleryPhotos
-              };
-              delete item.photo;
-            }
+
+          // petite galerie (5 max)
+          const galleryPhotos = (photosData.photos[poi.id] || [])
+            .filter(p => !p.is_primary)
+            .slice(0, 5)
+            .map(p => {
+              const block = photoBlockFrom(photosData.variants, p, 'thumb_small');
+              return block ? {
+                variants: block.variants,
+                width: block.variants[0]?.width ?? null,
+                height: block.variants[0]?.height ?? null,
+                dominant_color: block.dominant_color,
+                blurhash: block.blurhash
+              } : null;
+            })
+            .filter(Boolean);
+
+          if (galleryPhotos.length) {
+            item.photos = { primary: photo, gallery: galleryPhotos };
+            delete item.photo;
           }
         }
 
-        // Filter fields if requested
         return filterFields(item, fields);
       });
 
-      // Sort by segment
-      const sortedItems = sortItemsBySegment(enrichedItems, segment);
-
-      // Apply pagination
-      const pageItems = sortedItems.slice(offset, offset + maxLimit);
-      
-      // Calculate cursors
-      const hasMore = (offset + maxLimit) < sortedItems.length;
-      const nextCursor = hasMore ? encodeCursor(offset + maxLimit) : null;
-      const previousCursor = offset > 0 ? encodeCursor(Math.max(offset - maxLimit, 0)) : null;
-
       reply.header('Cache-Control', 'public, max-age=300');
       return reply.success({
-        items: pageItems,
+        items: enrichedItems,
         next_cursor: nextCursor,
-        previous_cursor: previousCursor
+        previous_cursor: null // keyset: pas de prev
       });
 
     } catch (error) {
-      fastify.log.error('Error in GET /poi:', error.message, error.stack);
+      fastify.log.error('Error in GET /poi:', error);
       return reply.error('Internal server error', 500);
     }
   });
