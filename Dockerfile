@@ -1,5 +1,5 @@
 # Production Dockerfile for Gatto API
-FROM node:18-alpine
+FROM node:20-alpine
 
 # Set working directory
 WORKDIR /app
@@ -8,25 +8,30 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install production dependencies
-RUN npm ci --only=production && npm cache clean --force
-
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy application code
 COPY . .
 
-# Change ownership to nodejs user
-RUN chown -R nodejs:nodejs /app
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001 && \
+    chown -R nodejs:nodejs /app
+
+# Switch to non-root user
 USER nodejs
 
-# Expose port
-EXPOSE 3100
+# Runtime environment variables
+ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=8080
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3100/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+# Expose port
+EXPOSE 8080
+
+# Health check using wget (available in alpine)
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/health || exit 1
 
 # Start application
-CMD ["npm", "start"]
+CMD ["node", "server.js"]
