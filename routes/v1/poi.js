@@ -591,7 +591,7 @@ export default async function poiRoutes(fastify, opts) {
       const poiId = poi.id;
 
       // Parallel enrichment
-      const [scores, photosData, ratings, mentions] = await Promise.all([
+      const [scores, photosData, ratings, mentions, enrichedTags] = await Promise.all([
         // Fetch scores from latest_poi_scores
         (async () => {
           const { data, error } = await fastify.supabase
@@ -632,7 +632,24 @@ export default async function poiRoutes(fastify, opts) {
           return result;
         })(),
         
-        enrichWithMentions(fastify, [poiId], true)
+        enrichWithMentions(fastify, [poiId], true),
+        
+        // Enrich tags with taxonomy labels
+        (async () => {
+          if (!poi.tags) return {};
+          
+          const { data, error } = await fastify.supabase.rpc('enrich_tags_with_labels', {
+            p_tags: poi.tags,
+            p_lang: lang
+          });
+          
+          if (error) {
+            fastify.log.warn('Failed to enrich tags with labels:', error);
+            return poi.tags; // Fallback to original tags
+          }
+          
+          return data || {};
+        })()
       ]);
 
       const score = scores[poiId];
@@ -654,6 +671,7 @@ export default async function poiRoutes(fastify, opts) {
         coords: { lat: poi.lat, lng: poi.lng },
         price_level: poi.price_level,
         tags_keys: poi.tags || {},
+        tags: enrichedTags,
         summary: pickLang(poi, lang, 'ai_summary'),
         opening_hours: poi.opening_hours
       };
