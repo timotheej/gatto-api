@@ -205,8 +205,8 @@ async function enrichWithMentions(fastify, poiIds, includeDetails = false) {
   Object.keys(countsByPoi).forEach(poiId => {
     const domains = Array.from(domainsByPoi[poiId]);
     result[poiId] = {
-      sources_count: countsByPoi[poiId].size,
-      sources_sample: domains.map(domain => {
+      mentions_count: countsByPoi[poiId].size,
+      mentions_sample: domains.map(domain => {
         const mentionData = mentionsByDomain[poiId].get(domain);
         return {
           domain,
@@ -483,8 +483,8 @@ export default async function poiRoutes(fastify, opts) {
 
         const mentionData = mentions[poi.id];
         if (mentionData) {
-          item.sources_count = mentionData.sources_count;
-          item.sources_sample = mentionData.sources_sample;
+          item.mentions_count = mentionData.mentions_count;
+          item.mentions_sample = mentionData.mentions_sample;
         }
 
         // Inclure tags_flat si demandé dans fields
@@ -592,9 +592,46 @@ export default async function poiRoutes(fastify, opts) {
 
       // Parallel enrichment
       const [scores, photosData, ratings, mentions] = await Promise.all([
-        enrichWithScores(fastify, [poiId]),
-        enrichWithPhotos(fastify, [poiId], ['detail@1x', 'detail@2x', 'thumb_small@1x', 'thumb_small@2x']),
-        enrichWithRatings(fastify, [poiId]),
+        // Fetch scores from latest_poi_scores
+        (async () => {
+          const { data, error } = await fastify.supabase
+            .from('latest_poi_scores')
+            .select('poi_id, gatto_score, digital_score, awards_bonus, freshness_bonus, calculated_at')
+            .eq('poi_id', poiId)
+            .limit(1);
+          
+          if (error) {
+            fastify.log.warn('latest_poi_scores fetch error:', error);
+            return {};
+          }
+          const result = {};
+          if (data?.[0]) {
+            result[poiId] = data[0];
+          }
+          return result;
+        })(),
+        
+        enrichWithPhotos(fastify, [poiId], ['detail@1x', 'detail@2x', 'thumb_small@1x', 'thumb_small@2x', 'gallery@1x']),
+        
+        // Fetch ratings from latest_google_rating
+        (async () => {
+          const { data, error } = await fastify.supabase
+            .from('latest_google_rating')
+            .select('poi_id, rating_value, reviews_count')
+            .eq('poi_id', poiId)
+            .limit(1);
+          
+          if (error) {
+            fastify.log.warn('latest_google_rating fetch error:', error);
+            return {};
+          }
+          const result = {};
+          if (data?.[0]) {
+            result[poiId] = data[0];
+          }
+          return result;
+        })(),
+        
         enrichWithMentions(fastify, [poiId], true)
       ]);
 
@@ -623,15 +660,27 @@ export default async function poiRoutes(fastify, opts) {
 
       // Photos
       const primaryBlock = primaryPhoto ? photoBlockFrom(photosData.variants, primaryPhoto, 'detail') : null;
+      const primaryGalleryBlock = primaryPhoto ? photoBlockFrom(photosData.variants, primaryPhoto, 'gallery') : null;
 
       const galleryBlocks = otherPhotos.map(ph => {
-        const pb = photoBlockFrom(photosData.variants, ph, 'thumb_small');
-        return pb && {
-          variants: pb.variants,
-          width: (pb.variants[0] && pb.variants[0].width) || null,
-          height: (pb.variants[0] && pb.variants[0].height) || null,
-          dominant_color: pb.dominant_color || null,
-          blurhash: pb.blurhash || null
+        const thumbBlock = photoBlockFrom(photosData.variants, ph, 'thumb_small');
+        const galleryBlock = photoBlockFrom(photosData.variants, ph, 'gallery');
+        
+        if (!thumbBlock) return null;
+        
+        return {
+          variants: thumbBlock.variants,
+          width: (thumbBlock.variants[0] && thumbBlock.variants[0].width) || null,
+          height: (thumbBlock.variants[0] && thumbBlock.variants[0].height) || null,
+          dominant_color: thumbBlock.dominant_color || null,
+          blurhash: thumbBlock.blurhash || null,
+          gallery: galleryBlock ? {
+            variants: galleryBlock.variants,
+            width: (galleryBlock.variants[0] && galleryBlock.variants[0].width) || null,
+            height: (galleryBlock.variants[0] && galleryBlock.variants[0].height) || null,
+            dominant_color: galleryBlock.dominant_color || null,
+            blurhash: galleryBlock.blurhash || null
+          } : null
         };
       }).filter(Boolean);
 
@@ -641,7 +690,14 @@ export default async function poiRoutes(fastify, opts) {
           width: (primaryBlock.variants[0] && primaryBlock.variants[0].width) || null,
           height: (primaryBlock.variants[0] && primaryBlock.variants[0].height) || null,
           dominant_color: primaryBlock.dominant_color || null,
-          blurhash: primaryBlock.blurhash || null
+          blurhash: primaryBlock.blurhash || null,
+          gallery: primaryGalleryBlock ? {
+            variants: primaryGalleryBlock.variants,
+            width: (primaryGalleryBlock.variants[0] && primaryGalleryBlock.variants[0].width) || null,
+            height: (primaryGalleryBlock.variants[0] && primaryGalleryBlock.variants[0].height) || null,
+            dominant_color: primaryGalleryBlock.dominant_color || null,
+            blurhash: primaryGalleryBlock.blurhash || null
+          } : null
         } : null,
         gallery: galleryBlocks
       };
@@ -666,8 +722,16 @@ export default async function poiRoutes(fastify, opts) {
       }
 
       // Mentions
-      if (mentionData?.mentions) {
-        result.mentions = mentionData.mentions;
+      if (mentionData) {
+        if (mentionData.mentions_count) {
+          result.mentions_count = mentionData.mentions_count;
+        }
+        if (mentionData.mentions_sample) {
+          result.mentions_sample = mentionData.mentions_sample;
+        }
+        if (mentionData.mentions) {
+          result.mentions = mentionData.mentions;
+        }
       }
 
       // Breadcrumb
