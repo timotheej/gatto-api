@@ -248,27 +248,33 @@ async function enrichWithMentions(fastify, poiIds, includeDetails = false) {
 function buildBreadcrumb(poi, lang) {
   const breadcrumb = [];
   
+  // Accueil
+  breadcrumb.push({
+    label: lang === 'en' ? 'Home' : 'Accueil',
+    href: '/'
+  });
+
   // City
   breadcrumb.push({
     label: poi.city || 'Paris',
     href: `/${poi.city_slug || 'paris'}`
   });
 
-  // Category
-  if (poi.category) {
-    const categoryLabel = lang === 'en' ? poi.category + 's' : pluralizeCategoryFr(poi.category);
-    breadcrumb.push({
-      label: categoryLabel.charAt(0).toUpperCase() + categoryLabel.slice(1),
-      href: `/${poi.city_slug || 'paris'}/${poi.category}s`
-    });
-  }
-
   // District
   if (poi.district_name) {
     const districtSlug = buildDistrictSlug(poi.district_name);
     breadcrumb.push({
       label: poi.district_name,
-      href: `/${poi.city_slug || 'paris'}/${poi.category}s/${districtSlug}`
+      href: `/${poi.city_slug || 'paris'}/${districtSlug}`
+    });
+  }
+
+  // Neighbourhood
+  if (poi.neighbourhood_name) {
+    const neighbourhoodSlug = buildNeighbourhoodSlug(poi.neighbourhood_name);
+    breadcrumb.push({
+      label: poi.neighbourhood_name,
+      href: `/${poi.city_slug || 'paris'}/${poi.district_name ? buildDistrictSlug(poi.district_name) + '/' : ''}${neighbourhoodSlug}`
     });
   }
 
@@ -673,7 +679,11 @@ export default async function poiRoutes(fastify, opts) {
         tags_keys: poi.tags || {},
         tags: enrichedTags,
         summary: pickLang(poi, lang, 'ai_summary'),
-        opening_hours: poi.opening_hours
+        opening_hours: poi.opening_hours,
+        google_place_id: poi.google_place_id,
+        address: poi.address_street && poi.city ? `${poi.address_street}, ${poi.city}` : poi.address_street || poi.city || null,
+        website: poi.website,
+        phone: poi.phone
       };
 
       // Photos
@@ -746,9 +756,6 @@ export default async function poiRoutes(fastify, opts) {
         }
         if (mentionData.mentions_sample) {
           result.mentions_sample = mentionData.mentions_sample;
-        }
-        if (mentionData.mentions) {
-          result.mentions = mentionData.mentions;
         }
       }
 
