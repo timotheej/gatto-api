@@ -13,6 +13,7 @@ import responsesPlugin from './utils/responses.js';
 
 import v1Routes from './routes/v1/index.js';
 import poiRoutes from './routes/v1/poi.js';
+import poiFacetsRoutes from './routes/v1/poi/facets.js';
 import collectionsRoutes from './routes/v1/collections.js';
 import homeRoutes from './routes/v1/home.js';
 
@@ -40,6 +41,7 @@ async function build() {
 
     await fastify.register(v1Routes, { prefix: '/v1' });
     await fastify.register(poiRoutes, { prefix: '/v1' });
+    await fastify.register(poiFacetsRoutes);
     await fastify.register(collectionsRoutes, { prefix: '/v1' });
     await fastify.register(homeRoutes, { prefix: '/v1' });
 
