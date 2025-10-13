@@ -51,13 +51,7 @@ function decodeKeysetCursor(b64) {
   }
 }
 
-// Prix -> enum text pour l'arg p_price_level
-const PRICE_MAP = {
-  '€': 'PRICE_LEVEL_INEXPENSIVE',
-  '€€': 'PRICE_LEVEL_MODERATE',
-  '€€€': 'PRICE_LEVEL_EXPENSIVE',
-  '€€€€': 'PRICE_LEVEL_VERY_EXPENSIVE'
-};
+// Prix géré avec numéros 1,2,3,4 au lieu des symboles €
 
 // Title-case simple pour transformer des slugs en labels
 const capFromSlug = (s) => s
@@ -116,6 +110,68 @@ function buildDistrictSlug(districtName) {
 function buildNeighbourhoodSlug(neighbourhoodName) {
   if (!neighbourhoodName) return '';
   return slugify(neighbourhoodName);
+}
+
+// ==== RPC FETCHER & ADAPTER (safe addition) ====
+
+// Fetcher RPC dédié pour list_pois_segment
+async function fetchPoisViaRPC(fastify, params) {
+  try {
+    const { data: rows, error } = await fastify.supabase.rpc('list_pois_segment', params);
+    if (error) {
+      fastify.log.error('RPC list_pois_segment error:', error);
+      return [];
+    }
+    return rows || [];
+  } catch (err) {
+    fastify.log.error('fetchPoisViaRPC exception:', err);
+    return [];
+  }
+}
+
+// Adapter RPC -> Legacy POI format (non-destructive)
+function adaptRpcRowToLegacyPoi(row) {
+  return {
+    id: row.id,
+    google_place_id: row.google_place_id,
+    city_slug: row.city_slug,
+    name: row.name,
+    name_en: row.name_en,
+    name_fr: row.name_fr,
+    slug_en: row.slug_en,
+    slug_fr: row.slug_fr,
+    category: row.category,
+    address_street: row.address_street,
+    city: row.city,
+    country: row.country,
+    lat: row.lat,
+    lng: row.lng,
+    opening_hours: row.opening_hours,
+    price_level: row.price_level,
+    phone: row.phone,
+    website: row.website,
+    district_name: row.district_name,
+    neighbourhood_name: row.neighbourhood_name,
+    publishable_status: row.publishable_status,
+    ai_summary: row.ai_summary,
+    ai_summary_en: row.ai_summary_en,
+    ai_summary_fr: row.ai_summary_fr,
+    tags: row.tags,
+    tags_flat: row.tags_flat,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    // Stocker les nouvelles données RPC sans impacter les builders existants
+    __rpcMeta: {
+      gatto_score: row.gatto_score,
+      digital_score: row.digital_score,
+      awards_bonus: row.awards_bonus,
+      freshness_bonus: row.freshness_bonus,
+      mentions_count: row.mentions_count,
+      rating_value: row.rating_value,
+      rating_reviews_count: row.rating_reviews_count,
+      calculated_at: row.calculated_at
+    }
+  };
 }
 
 // ==== BUSINESS LOGIC ====
@@ -309,7 +365,7 @@ function filterFields(data, fields) {
 
 // ==== ROUTES ====
 
-export default async function poiRoutes(fastify, opts) {
+export default async function poiRoutes(fastify) {
   
   // GET /v1/poi - Paginated list with RPC
   fastify.get('/poi', async (request, reply) => {
@@ -319,12 +375,16 @@ export default async function poiRoutes(fastify, opts) {
       const {
         view = 'card',
         segment,                         // 'gatto' | 'digital' | 'awarded' | 'fresh' (optionnel)
-        category,                        // string (enum côté DB)
+        category,                        // string (enum côté DB) - peut être multiples séparées par virgule (AND)
+        subcategory,                     // sous-catégories multiples séparées par virgule (AND)
         neighbourhood_slug,              // ex: 'haut-marais'
         district_slug,                   // ex: '10e-arrondissement'
         tags,                            // ex: 'trendy,modern' (AND logique)
         tags_any,                        // ex: 'terrace,michelin' (OR logique)
-        price,                           // '€'| '€€' | ...
+        price,                           // 1,2,3,4 (sélection unique)
+        awarded,                         // true/false
+        fresh,                           // true/false
+        sort = 'gatto',                  // gatto|price_desc|price_asc|mentions|rating
         city = 'paris',
         limit = 24,
         cursor,                          // keyset base64 {score,id}
@@ -337,7 +397,30 @@ export default async function poiRoutes(fastify, opts) {
       // normalisations
       const neighbourhoodName = capFromSlug(neighbourhood_slug);
       const districtName = capFromSlug(district_slug);
-      const priceLevel = price ? (PRICE_MAP[price] || null) : null;
+      
+      // Gestion du prix (maintenant numérique 1,2,3,4)
+      let priceLevel = null;
+      if (price) {
+        const priceNum = parseInt(price, 10);
+        if (priceNum >= 1 && priceNum <= 4) {
+          const priceLevels = [null, 'PRICE_LEVEL_INEXPENSIVE', 'PRICE_LEVEL_MODERATE', 'PRICE_LEVEL_EXPENSIVE', 'PRICE_LEVEL_VERY_EXPENSIVE'];
+          priceLevel = priceLevels[priceNum];
+        }
+      }
+      
+      // Parsing des catégories multiples (AND)
+      const categories = category
+        ? category.split(',').map(c => c.trim()).filter(Boolean)
+        : null;
+      
+      // Parsing des sous-catégories multiples (AND)
+      const subcategories = subcategory
+        ? subcategory.split(',').map(sc => sc.trim()).filter(Boolean)
+        : null;
+      
+      // Filtres booléens
+      const isAwarded = awarded === 'true' ? true : (awarded === 'false' ? false : null);
+      const isFresh = fresh === 'true' ? true : (fresh === 'false' ? false : null);
 
       // Parsing des tags pour filtrage AND/OR
       const tagsAll = tags
@@ -348,95 +431,93 @@ export default async function poiRoutes(fastify, opts) {
         ? tags_any.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
         : null;
 
-      // on unifie: branche unique par RPC (même sans segment -> défaut géré côté SQL)
+      // Détermination de la colonne de tri pour le curseur (maintenant géré dans la RPC)
       const after = decodeKeysetCursor(cursor);
-      const segCol =
-        segment === 'digital' ? 'digital_score' :
-        segment === 'awarded' ? 'awards_bonus' :
-        segment === 'fresh'   ? 'freshness_bonus' :
-                                'gatto_score';
+      
+      // La colonne pour le curseur dépend du tri demandé
+      let segCol = 'gatto_score';
+      if (sort === 'price_desc' || sort === 'price_asc') {
+        segCol = 'price_level_numeric';
+      } else if (sort === 'mentions') {
+        segCol = 'mentions_count';
+      } else if (sort === 'rating') {
+        segCol = 'rating_value';
+      } else if (segment === 'digital') {
+        segCol = 'digital_score';
+      } else if (segment === 'awarded') {
+        segCol = 'awards_bonus';
+      } else if (segment === 'fresh') {
+        segCol = 'freshness_bonus';
+      }
 
       const rpcParams = {
         p_city_slug: city || 'paris',
-        p_category: category || null,
+        p_category: category || null,           // Backward compatibility pour catégorie simple
+        p_categories: categories,               // Catégories multiples (AND)
+        p_subcategories: subcategories,         // Sous-catégories multiples (AND)
         p_price_level: priceLevel,
         p_neighbourhood: neighbourhoodName,
         p_district: districtName,
-        p_tags_all: tagsAll,               // filtrage AND logique
-        p_segment: segment || 'gatto',     // défaut unifié
+        p_tags_all: tagsAll,                   // Filtrage AND logique
+        p_tags_any: tagsAny,                   // Filtrage OR logique
+        p_awarded: isAwarded,                  // Filtre awarded (awards_bonus > 0)
+        p_fresh: isFresh,                      // Filtre fresh (freshness_bonus > 0)
+        p_sort: sort,                          // Type de tri
+        p_segment: segment || 'gatto',         // Segment pour backward compatibility
         p_limit: maxLimit,
         p_after_score: after?.score ?? null,
-        p_after_id: after?.id ?? null,
-        p_tags_any: tagsAny                // filtrage OR logique
+        p_after_id: after?.id ?? null
       };
 
-      const { data: rows, error } = await fastify.supabase.rpc('list_pois_segment', rpcParams);
-      if (error) {
-        fastify.log.error('RPC list_pois_segment error:', error);
-        return reply.error('Failed to fetch POIs', 500);
-      }
-
-      // rows = POI + derniers scores déjà joints
-      // Prépare un map pour les scores, et une liste POI nettoyée (sans colonnes de score)
-      const poiScores = {};
-      const pois = rows.map(r => {
-        poiScores[r.id] = {
-          poi_id: r.id,
-          gatto_score: Number(r.gatto_score ?? 0),
-          digital_score: Number(r.digital_score ?? 0),
-          awards_bonus: Number(r.awards_bonus ?? 0),
-          freshness_bonus: Number(r.freshness_bonus ?? 0),
-          calculated_at: r.calculated_at
-        };
-
-        // NE PAS jeter tags_flat ici
-        const {
-          gatto_score, digital_score, awards_bonus, freshness_bonus, calculated_at,
-          ...poiData
-        } = r;
-
-        return poiData; // poiData contient encore tags_flat
-      });
+      // Utilisation du fetcher RPC dédié
+      const rpcRows = await fetchPoisViaRPC(fastify, rpcParams);
+      
+      // Adapter les données RPC vers le format legacy attendu par les builders
+      const pois = rpcRows.map(adaptRpcRowToLegacyPoi);
 
       // next_cursor (keyset) si page pleine
       let nextCursor = null;
       if (pois.length === maxLimit) {
-        const last = rows[rows.length - 1];
-        nextCursor = encodeKeysetCursor({ score: Number(last[segCol] ?? 0), id: last.id });
+        const lastRpcRow = rpcRows[rpcRows.length - 1];
+        // Utilise la même logique de colonne de tri que pour la RPC
+        let lastScore = 0;
+        if (sort === 'price_desc' || sort === 'price_asc') {
+          const priceLevels = { 'PRICE_LEVEL_INEXPENSIVE': 1, 'PRICE_LEVEL_MODERATE': 2, 'PRICE_LEVEL_EXPENSIVE': 3, 'PRICE_LEVEL_VERY_EXPENSIVE': 4 };
+          lastScore = priceLevels[lastRpcRow.price_level] || 0;
+          if (sort === 'price_asc') lastScore = -lastScore;
+        } else if (sort === 'mentions') {
+          lastScore = Number(lastRpcRow.mentions_count ?? 0);
+        } else if (sort === 'rating') {
+          lastScore = Number(lastRpcRow.rating_value ?? 0);
+        } else if (segment === 'digital') {
+          lastScore = Number(lastRpcRow.digital_score ?? 0);
+        } else if (segment === 'awarded') {
+          lastScore = Number(lastRpcRow.awards_bonus ?? 0);
+        } else if (segment === 'fresh') {
+          lastScore = Number(lastRpcRow.freshness_bonus ?? 0);
+        } else {
+          lastScore = Number(lastRpcRow.gatto_score ?? 0);
+        }
+        nextCursor = encodeKeysetCursor({ score: lastScore, id: lastRpcRow.id });
       }
 
-      // Enrichissements: photos, ratings (vue), mentions
+      // Enrichissements: photos seulement (ratings et mentions sont dans la RPC)
       const poiIds = pois.map(p => p.id);
       const variantKeys = view === 'card'
         ? ['card_sq@1x', 'card_sq@2x']
         : ['card_sq@1x', 'card_sq@2x', 'detail@1x', 'detail@2x', 'thumb_small@1x', 'thumb_small@2x'];
 
-      const [photosData, ratings, mentions] = await Promise.all([
+      // Enrichissement conditionnel des mentions_sample si les vues l'utilisent
+      const needsMentionsSample = view === 'card' || !fields || fields.includes('mentions_sample');
+      
+      const [photosData, mentionsSamples] = await Promise.all([
         enrichWithPhotos(fastify, poiIds, variantKeys),
-
-        // ratings depuis la vue 'public.latest_google_rating'
-        (async () => {
-          if (!poiIds.length) return {};
-          const { data, error } = await fastify.supabase
-            .from('latest_google_rating')
-            .select('poi_id, rating_value, reviews_count')
-            .in('poi_id', poiIds);
-
-          if (error) {
-            fastify.log.warn('latest_google_rating fetch error:', error);
-            return {};
-          }
-          const m = {};
-          (data || []).forEach(r => { m[r.poi_id] = r; });
-          return m;
-        })(),
-
-        enrichWithMentions(fastify, poiIds, false)
+        needsMentionsSample ? enrichWithMentions(fastify, poiIds, false) : Promise.resolve({})
       ]);
 
       // Construction des items (card|detail, champs optionnels)
       const enrichedItems = pois.map(poi => {
-        const score = poiScores[poi.id];
+        const rpcMeta = poi.__rpcMeta;
 
         // Photo principale (ou fallback 1ère)
         const poiPhotos = photosData.photos[poi.id] || [];
@@ -467,30 +548,34 @@ export default async function poiRoutes(fastify, opts) {
 
         if (photo) item.photo = photo;
 
-        if (score) {
-          item.score = score.gatto_score;
+        // Scores depuis RPC (avec backward compatibility)
+        if (rpcMeta) {
+          item.score = rpcMeta.gatto_score;
           if (!fields || fields.includes('scores')) {
             item.scores = {
-              gatto: score.gatto_score,
-              digital: score.digital_score,
-              awards_bonus: score.awards_bonus,
-              freshness_bonus: score.freshness_bonus
+              gatto: rpcMeta.gatto_score,
+              digital: rpcMeta.digital_score,
+              awards_bonus: rpcMeta.awards_bonus,
+              freshness_bonus: rpcMeta.freshness_bonus
             };
           }
         }
 
-        const rating = ratings[poi.id];
-        if (rating) {
+        // Rating depuis RPC (avec backward compatibility)
+        if (rpcMeta && rpcMeta.rating_value !== null) {
           item.rating = {
-            google: rating.rating_value,
-            reviews_count: rating.reviews_count
+            google: rpcMeta.rating_value,
+            reviews_count: rpcMeta.rating_reviews_count
           };
         }
 
-        const mentionData = mentions[poi.id];
-        if (mentionData) {
-          item.mentions_count = mentionData.mentions_count;
-          item.mentions_sample = mentionData.mentions_sample;
+        // Mentions : count depuis RPC, samples depuis enrichissement si disponible
+        if (rpcMeta && rpcMeta.mentions_count > 0) {
+          item.mentions_count = rpcMeta.mentions_count;
+        }
+        const mentionSampleData = mentionsSamples[poi.id];
+        if (mentionSampleData && mentionSampleData.mentions_sample) {
+          item.mentions_sample = mentionSampleData.mentions_sample;
         }
 
         // Inclure tags_flat si demandé dans fields
