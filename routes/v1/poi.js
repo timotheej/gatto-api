@@ -1,5 +1,8 @@
 // ==== HELPERS ====
 
+// Parse CSV string to array of lowercase strings
+const toArr = (v) => v ? v.split(',').map(s => s.trim()).filter(Boolean).map(s => s.toLowerCase()) : null;
+
 // Multi-language field picker with fallback
 function pickLang(obj, lang, base) {
   const primary = obj[`${base}_${lang}`];
@@ -150,8 +153,9 @@ function adaptRpcRowToLegacyPoi(row) {
     price_level: row.price_level,
     phone: row.phone,
     website: row.website,
-    district_name: row.district_name,
-    neighbourhood_name: row.neighbourhood_name,
+    // Mapping des nouveaux champs slug vers noms pour backward compatibility
+    district_name: row.district_slug,
+    neighbourhood_name: row.neighbourhood_slug,
     publishable_status: row.publishable_status,
     ai_summary: row.ai_summary,
     ai_summary_en: row.ai_summary_en,
@@ -169,7 +173,11 @@ function adaptRpcRowToLegacyPoi(row) {
       mentions_count: row.mentions_count,
       rating_value: row.rating_value,
       rating_reviews_count: row.rating_reviews_count,
-      calculated_at: row.calculated_at
+      calculated_at: row.calculated_at,
+      // Nouveaux champs disponibles directement depuis RPC
+      subcategories: row.subcategories || [],
+      district_slug: row.district_slug,
+      neighbourhood_slug: row.neighbourhood_slug
     }
   };
 }
@@ -384,6 +392,7 @@ export default async function poiRoutes(fastify) {
         price,                           // 1,2,3,4 (sélection unique)
         awarded,                         // true/false
         fresh,                           // true/false
+        awards,                          // ex: 'timeout,michelin' (CSV awards providers)
         sort = 'gatto',                  // gatto|price_desc|price_asc|mentions|rating
         city = 'paris',
         limit = 24,
@@ -398,15 +407,15 @@ export default async function poiRoutes(fastify) {
       const neighbourhoodName = capFromSlug(neighbourhood_slug);
       const districtName = capFromSlug(district_slug);
       
+      // Parse awards providers from CSV
+      const awardsProviders = toArr(awards);
+      
       // Gestion du prix (maintenant numérique 1,2,3,4)
-      let priceLevel = null;
-      if (price) {
-        const priceNum = parseInt(price, 10);
-        if (priceNum >= 1 && priceNum <= 4) {
-          const priceLevels = [null, 'PRICE_LEVEL_INEXPENSIVE', 'PRICE_LEVEL_MODERATE', 'PRICE_LEVEL_EXPENSIVE', 'PRICE_LEVEL_VERY_EXPENSIVE'];
-          priceLevel = priceLevels[priceNum];
-        }
-      }
+      const priceEnum =
+        price === '1' ? 'PRICE_LEVEL_INEXPENSIVE' :
+        price === '2' ? 'PRICE_LEVEL_MODERATE' :
+        price === '3' ? 'PRICE_LEVEL_EXPENSIVE' :
+        price === '4' ? 'PRICE_LEVEL_VERY_EXPENSIVE' : null;
       
       // Parsing des catégories multiples (AND)
       const categories = category
@@ -432,7 +441,14 @@ export default async function poiRoutes(fastify) {
         : null;
 
       // Détermination de la colonne de tri pour le curseur (maintenant géré dans la RPC)
-      const after = decodeKeysetCursor(cursor);
+      let afterScore = null, afterId = null;
+      if (cursor) {
+        try {
+          const c = JSON.parse(Buffer.from(String(cursor), 'base64').toString('utf8'));
+          afterScore = typeof c.score === 'number' ? c.score : null;
+          afterId = c.id ?? null;
+        } catch {}
+      }
       
       // La colonne pour le curseur dépend du tri demandé
       let segCol = 'gatto_score';
@@ -452,21 +468,21 @@ export default async function poiRoutes(fastify) {
 
       const rpcParams = {
         p_city_slug: city || 'paris',
-        p_category: category || null,           // Backward compatibility pour catégorie simple
-        p_categories: categories,               // Catégories multiples (AND)
-        p_subcategories: subcategories,         // Sous-catégories multiples (AND)
-        p_price_level: priceLevel,
-        p_neighbourhood: neighbourhoodName,
-        p_district: districtName,
-        p_tags_all: tagsAll,                   // Filtrage AND logique
-        p_tags_any: tagsAny,                   // Filtrage OR logique
-        p_awarded: isAwarded,                  // Filtre awarded (awards_bonus > 0)
-        p_fresh: isFresh,                      // Filtre fresh (freshness_bonus > 0)
-        p_sort: sort,                          // Type de tri
-        p_segment: segment || 'gatto',         // Segment pour backward compatibility
+        p_categories: categories && categories.length ? categories : null,
+        p_subcategories: subcategories && subcategories.length ? subcategories : null,
+        p_price_level: priceEnum,
+        p_neighbourhood: neighbourhood_slug || null,
+        p_district: district_slug || null,
+        p_tags_all: tagsAll && tagsAll.length ? tagsAll : null,
+        p_tags_any: tagsAny && tagsAny.length ? tagsAny : null,
+        p_awarded: isAwarded,
+        p_fresh: isFresh,
+        p_sort: sort || 'gatto',
+        p_segment: 'gatto',
         p_limit: maxLimit,
-        p_after_score: after?.score ?? null,
-        p_after_id: after?.id ?? null
+        p_after_score: afterScore,
+        p_after_id: afterId,
+        p_awards_providers: awardsProviders
       };
 
       // Utilisation du fetcher RPC dédié
@@ -479,25 +495,19 @@ export default async function poiRoutes(fastify) {
       let nextCursor = null;
       if (pois.length === maxLimit) {
         const lastRpcRow = rpcRows[rpcRows.length - 1];
-        // Utilise la même logique de colonne de tri que pour la RPC
-        let lastScore = 0;
-        if (sort === 'price_desc' || sort === 'price_asc') {
-          const priceLevels = { 'PRICE_LEVEL_INEXPENSIVE': 1, 'PRICE_LEVEL_MODERATE': 2, 'PRICE_LEVEL_EXPENSIVE': 3, 'PRICE_LEVEL_VERY_EXPENSIVE': 4 };
-          lastScore = priceLevels[lastRpcRow.price_level] || 0;
-          if (sort === 'price_asc') lastScore = -lastScore;
-        } else if (sort === 'mentions') {
-          lastScore = Number(lastRpcRow.mentions_count ?? 0);
-        } else if (sort === 'rating') {
-          lastScore = Number(lastRpcRow.rating_value ?? 0);
-        } else if (segment === 'digital') {
-          lastScore = Number(lastRpcRow.digital_score ?? 0);
-        } else if (segment === 'awarded') {
-          lastScore = Number(lastRpcRow.awards_bonus ?? 0);
-        } else if (segment === 'fresh') {
-          lastScore = Number(lastRpcRow.freshness_bonus ?? 0);
-        } else {
-          lastScore = Number(lastRpcRow.gatto_score ?? 0);
-        }
+        
+        const getCursorKey = (item) => {
+          switch (sort) {
+            case 'price_desc': return item.price_level_numeric;
+            case 'price_asc':  return -item.price_level_numeric;
+            case 'mentions':   return item.mentions_count ?? 0;
+            case 'rating':     return item.rating_value ?? 0;
+            case 'gatto':
+            default:           return item.gatto_score ?? 0;
+          }
+        };
+        
+        const lastScore = getCursorKey(lastRpcRow);
         nextCursor = encodeKeysetCursor({ score: lastScore, id: lastRpcRow.id });
       }
 
@@ -542,8 +552,9 @@ export default async function poiRoutes(fastify) {
           slug: pickLang(poi, lang, 'slug'),
           name: pickLang(poi, lang, 'name'),
           category: poi.category,
-          district: poi.district_name,
-          neighbourhood: poi.neighbourhood_name
+          subcategories: poi.__rpcMeta?.subcategories || [],
+          district: poi.__rpcMeta?.district_slug,
+          neighbourhood: poi.__rpcMeta?.neighbourhood_slug
         };
 
         if (photo) item.photo = photo;
@@ -613,6 +624,9 @@ export default async function poiRoutes(fastify) {
 
         return filterFields(item, fields);
       });
+
+      // Cache key including awards for proper cache separation
+      const cacheKey = `poi:${city}:${category}:${subcategory}:${price}:${district_slug}:${neighbourhood_slug}:${awarded}:${fresh}:${awards}:${sort}:${limit}:${cursor}`;
 
       reply.header('Cache-Control', 'public, max-age=300');
       return reply.success({
