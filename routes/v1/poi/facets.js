@@ -2,10 +2,19 @@ import { z } from 'zod';
 
 
 // Utility functions for parameter parsing
-function parseCsvToArray(str) {
+function parseCsvToArray(str, { lowercase = false } = {}) {
   if (!str || typeof str !== 'string') return null;
-  const arr = str.split(',').map(s => s.trim()).filter(Boolean);
+  const arr = str
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => (lowercase ? s.toLowerCase() : s));
   return arr.length ? arr : null;
+}
+
+function parseSingleFromCsv(str, { lowercase = false } = {}) {
+  const arr = parseCsvToArray(str, { lowercase });
+  return arr?.[0] ?? null;
 }
 
 function parseBoolTriState(v) {
@@ -14,6 +23,22 @@ function parseBoolTriState(v) {
   if (v === 'true') return true;
   if (v === 'false') return false;
   return null;
+}
+
+function parsePriceBound(value) {
+  if (value === undefined || value === null) return null;
+  const parsed = parseInt(String(value), 10);
+  if (Number.isNaN(parsed)) return null;
+  if (parsed < 1 || parsed > 4) return null;
+  return parsed;
+}
+
+function parseRatingBound(value) {
+  if (value === undefined || value === null) return null;
+  const parsed = Number.parseFloat(String(value));
+  if (Number.isNaN(parsed)) return null;
+  if (parsed < 0 || parsed > 5) return null;
+  return parsed;
 }
 
 // Validation schema
@@ -30,6 +55,10 @@ const QuerySchema = z.object({
   tags: z.string().optional(),
   tags_any: z.string().optional(),
   sort: z.string().optional(),
+  price_min: z.string().optional(),
+  price_max: z.string().optional(),
+  rating_min: z.string().optional(),
+  rating_max: z.string().optional(),
   lang: z.string().optional()
 }).strict();
 
@@ -52,23 +81,26 @@ export default async function poiFacetsRoutes(fastify) {
     
     const q = request.query || {};
 
-    const categories          = parseCsvToArray(q.category);
-    const subcategories       = parseCsvToArray(q.subcategory);
-    const tagsAll             = parseCsvToArray(q.tags);
-    const tagsAny             = parseCsvToArray(q.tags_any);
-    const awardsProviders     = q.awards ? q.awards.split(',').map(s => s.trim()).filter(Boolean).map(s => s.toLowerCase()) : null;
-    const districtSlugs       = q.district_slug      ? [String(q.district_slug)]      : null;
-    const neighbourhoodSlugs  = q.neighbourhood_slug ? [String(q.neighbourhood_slug)] : null;
-    
-    // Convertir le prix 1-4 en entier pour la RPC facets
-    let priceNum = null;
-    if (q.price) {
-      const parsed = parseInt(String(q.price), 10);
-      if (parsed >= 1 && parsed <= 4) {
-        priceNum = parsed;
-      }
+    const categorySlug        = parseSingleFromCsv(q.category, { lowercase: true });
+    const categories          = categorySlug ? [categorySlug] : null;
+    const subcategories       = parseCsvToArray(q.subcategory, { lowercase: true });
+    const tagsAll             = parseCsvToArray(q.tags, { lowercase: true });
+    const tagsAny             = parseCsvToArray(q.tags_any, { lowercase: true });
+    const awardsProviders     = parseCsvToArray(q.awards, { lowercase: true });
+    const districtSlugs       = parseCsvToArray(q.district_slug, { lowercase: true });
+    const neighbourhoodSlugs  = parseCsvToArray(q.neighbourhood_slug, { lowercase: true });
+    let priceMin              = parsePriceBound(q.price_min);
+    let priceMax              = parsePriceBound(q.price_max);
+    const ratingMin           = parseRatingBound(q.rating_min);
+    const ratingMax           = parseRatingBound(q.rating_max);
+
+    // Compat: legacy single price maps to exact range
+    const legacyPrice = parsePriceBound(q.price);
+    if (legacyPrice !== null) {
+      priceMin = priceMin ?? legacyPrice;
+      priceMax = priceMax ?? legacyPrice;
     }
-    
+
     const awarded             = parseBoolTriState(q.awarded);
     const fresh               = parseBoolTriState(q.fresh);
 
@@ -76,14 +108,18 @@ export default async function poiFacetsRoutes(fastify) {
       p_city_slug:           q.city || 'paris',
       p_categories:          categories,
       p_subcategories:       subcategories,
-      p_price:               Number.isInteger(priceNum) ? priceNum : null, // 1..4
+      p_price_min:           priceMin,
+      p_price_max:           priceMax,
+      p_rating_min:          ratingMin,
+      p_rating_max:          ratingMax,
       p_district_slugs:      districtSlugs,
       p_neighbourhood_slugs: neighbourhoodSlugs,
       p_tags_all:            tagsAll,
       p_tags_any:            tagsAny,
       p_awarded:             awarded,    // null/true/false
       p_fresh:               fresh,      // null/true/false
-      p_lang:                q.lang || 'fr'
+      p_lang:                q.lang || 'fr',
+      p_sort:                q.sort || 'gatto'
     };
 
     // Only add p_awards_providers if it's not null

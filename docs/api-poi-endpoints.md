@@ -18,15 +18,20 @@ Récupère une liste paginée de POIs avec filtres et tri.
 |-----------|------|--------|-------------|
 | `view` | string | `'card'` | Format de retour : `'card'` ou `'detail'` |
 | `segment` | string | `'gatto'` | Segment de scoring : `'gatto'` \| `'digital'` \| `'awarded'` \| `'fresh'` |
-| `category` | string | - | Catégorie unique ou multiples séparées par virgule (AND) |
-| `subcategory` | string | - | Sous-catégories multiples séparées par virgule (AND) |
-| `neighbourhood_slug` | string | - | Slug du quartier (ex: `'haut-marais'`) |
-| `district_slug` | string | - | Slug de l'arrondissement (ex: `'10e-arrondissement'`) |
-| `tags` | string | - | Tags avec logique AND (ex: `'trendy,modern'`) |
-| `tags_any` | string | - | Tags avec logique OR (ex: `'terrace,michelin'`) |
-| `price` | integer | - | Niveau de prix : `1` (€) \| `2` (€€) \| `3` (€€€) \| `4` (€€€€) |
+| `category` | string | - | Catégorie unique (slug) |
+| `subcategory` | string | - | Sous-catégories multiples CSV (logique OR) |
+| `neighbourhood_slug` | string | - | CSV de quartiers (logique OR) |
+| `district_slug` | string | - | CSV d'arrondissements (logique OR) |
+| `tags` | string | - | Tags CSV avec logique AND (ex: `'trendy,modern'`) |
+| `tags_any` | string | - | Tags CSV avec logique OR (ex: `'terrace,michelin'`) |
+| `price` | integer | - | Compat : sélection unique `1..4` (maps to range) |
+| `price_min` | integer | - | Borne min de prix (1..4, inclusif) |
+| `price_max` | integer | - | Borne max de prix (1..4, inclusif) |
+| `rating_min` | number | - | Borne min de note (0..5) |
+| `rating_max` | number | - | Borne max de note (0..5) |
 | `awarded` | boolean | - | Filtre sur les lieux primés (`true`/`false`) |
 | `fresh` | boolean | - | Filtre sur les nouveautés (`true`/`false`) |
+| `awards` | string | - | CSV de providers d'awards (logique OR) |
 | `sort` | string | `'gatto'` | Tri : `'gatto'` \| `'digital'` \| `'price_desc'` \| `'price_asc'` \| `'mentions'` \| `'rating'` |
 | `city` | string | `'paris'` | Ville |
 | `limit` | integer | `24` | Nombre d'items (max 50) |

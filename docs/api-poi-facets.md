@@ -12,12 +12,21 @@ GET /v1/poi/facets
 
 | Paramètre | Type | Requis | Défaut | Description |
 |-----------|------|--------|---------|-------------|
-| `city` | string | Non | `"paris"` | Ville de recherche |
-| `district_slug` | string | Non | - | Slug de l'arrondissement (ex: `"10e-arrondissement"`) |
-| `neighbourhood_slug` | string | Non | - | Slug du quartier (ex: `"haut-marais"`) |
-| `category` | string | Non | - | Catégorie POI (`"restaurant"`, `"bar"`, `"cafe"`, `"bakery"`) |
-| `price` | string | Non | - | Niveau de prix (`"€"`, `"€€"`, `"€€€"`, `"€€€€"`) |
-| `tags` | string | Non | - | Tags CSV pour filtrage AND (ex: `"trendy,terrace"`) |
+| `city` | string | Oui | `"paris"` | Slug de la ville active |
+| `sort` | string | Oui | `"gatto"` | Aligné sur la liste (`gatto`, `price_desc`, `price_asc`, `mentions`, `rating`) |
+| `category` | string | Non | - | Slug de catégorie (single-choice) |
+| `subcategory` | string | Non | - | CSV de sous-catégories (logique OR) |
+| `district_slug` | string | Non | - | CSV d'arrondissements (logique OR) |
+| `neighbourhood_slug` | string | Non | - | CSV de quartiers (logique OR) |
+| `tags` | string | Non | - | CSV de tags (logique AND) |
+| `tags_any` | string | Non | - | CSV de tags (logique OR) |
+| `awards` | string | Non | - | CSV de providers d'awards (logique OR) |
+| `price_min` | number | Non | - | Borne min de prix (1 à 4, inclusif) |
+| `price_max` | number | Non | - | Borne max de prix (1 à 4, inclusif) |
+| `rating_min` | number | Non | - | Borne min de rating (0 à 5, inclusif) |
+| `rating_max` | number | Non | - | Borne max de rating (0 à 5, inclusif) |
+| `awarded` | boolean | Non | - | Ne conserve que les POI récompensés (`true`/`false`) |
+| `fresh` | boolean | Non | - | Ne conserve que les POI “fresh” (`true`/`false`) |
 | `lang` | string | Non | Auto-détecté | Langue (`"fr"` ou `"en"`) |
 
 ## Headers
@@ -32,43 +41,67 @@ GET /v1/poi/facets
   "data": {
     "context": {
       "city": "paris",
-      "total_results": 395
+      "total_results": 312,
+      "applied_filters": {
+        "category": ["restaurant"],
+        "price": { "min": 2, "max": 3 },
+        "rating": { "min": 4, "max": 5 },
+        "district_slug": ["10e-arrondissement","11e-arrondissement"],
+        "sort": "rating"
+      }
     },
     "facets": {
       "category": [
         {
-          "count": 248,
+          "count": 208,
           "value": "restaurant"
         },
         {
-          "count": 80,
+          "count": 54,
           "value": "bar"
         }
       ],
       "subcategories": [
         {
-          "count": 118,
+          "count": 72,
           "value": "french_restaurant"
         }
       ],
       "price": [
         {
-          "count": 27,
-          "value": "PRICE_LEVEL_INEXPENSIVE"
+          "count": 18,
+          "value": "1",
+          "label": "€"
         },
         {
-          "count": 217,
-          "value": "PRICE_LEVEL_MODERATE"
+          "count": 126,
+          "value": "2",
+          "label": "€€"
+        },
+        {
+          "count": 93,
+          "value": "3",
+          "label": "€€€"
         }
       ],
+      "price_levels": [
+        { "value": "1", "label": "€" },
+        { "value": "2", "label": "€€" },
+        { "value": "3", "label": "€€€" },
+        { "value": "4", "label": "€€€€" }
+      ],
+      "rating_range": {
+        "min": 3.6,
+        "max": 4.9
+      },
       "tags": [
         {
-          "count": 318,
+          "count": 244,
           "label": "Voyage Culinaire",
           "value": "culinary_journey"
         },
         {
-          "count": 304,
+          "count": 231,
           "label": "Dîner",
           "value": "dinner"
         }

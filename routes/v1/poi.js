@@ -3,6 +3,22 @@
 // Parse CSV string to array of lowercase strings
 const toArr = (v) => v ? v.split(',').map(s => s.trim()).filter(Boolean).map(s => s.toLowerCase()) : null;
 
+const parsePriceBound = (value) => {
+  if (value === undefined || value === null) return null;
+  const parsed = parseInt(String(value), 10);
+  if (Number.isNaN(parsed)) return null;
+  if (parsed < 1 || parsed > 4) return null;
+  return parsed;
+};
+
+const parseRatingBound = (value) => {
+  if (value === undefined || value === null) return null;
+  const parsed = Number.parseFloat(String(value));
+  if (Number.isNaN(parsed)) return null;
+  if (parsed < 0 || parsed > 5) return null;
+  return parsed;
+};
+
 // Multi-language field picker with fallback
 function pickLang(obj, lang, base) {
   const primary = obj[`${base}_${lang}`];
@@ -55,11 +71,6 @@ function decodeKeysetCursor(b64) {
 }
 
 // Prix géré avec numéros 1,2,3,4 au lieu des symboles €
-
-// Title-case simple pour transformer des slugs en labels
-const capFromSlug = (s) => s
-  ? s.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
-  : null;
 
 // ==== Image variant helpers ====
 // Returns full photo block with variants or a master fallback
@@ -324,24 +335,6 @@ function buildBreadcrumb(poi, lang) {
     href: `/${poi.city_slug || 'paris'}`
   });
 
-  // District
-  if (poi.district_name) {
-    const districtSlug = buildDistrictSlug(poi.district_name);
-    breadcrumb.push({
-      label: poi.district_name,
-      href: `/${poi.city_slug || 'paris'}/${districtSlug}`
-    });
-  }
-
-  // Neighbourhood
-  if (poi.neighbourhood_name) {
-    const neighbourhoodSlug = buildNeighbourhoodSlug(poi.neighbourhood_name);
-    breadcrumb.push({
-      label: poi.neighbourhood_name,
-      href: `/${poi.city_slug || 'paris'}/${poi.district_name ? buildDistrictSlug(poi.district_name) + '/' : ''}${neighbourhoodSlug}`
-    });
-  }
-
   return breadcrumb;
 }
 
@@ -383,13 +376,17 @@ export default async function poiRoutes(fastify) {
       const {
         view = 'card',
         segment,                         // 'gatto' | 'digital' | 'awarded' | 'fresh' (optionnel)
-        category,                        // string (enum côté DB) - peut être multiples séparées par virgule (AND)
-        subcategory,                     // sous-catégories multiples séparées par virgule (AND)
-        neighbourhood_slug,              // ex: 'haut-marais'
-        district_slug,                   // ex: '10e-arrondissement'
+        category,                        // string (slug)
+        subcategory,                     // sous-catégories multiples séparées par virgule (OR)
+        neighbourhood_slug,              // CSV de slugs (ex: 'haut-marais,bastille')
+        district_slug,                   // CSV de slugs (ex: '10e-arrondissement,11e-arrondissement')
         tags,                            // ex: 'trendy,modern' (AND logique)
         tags_any,                        // ex: 'terrace,michelin' (OR logique)
-        price,                           // 1,2,3,4 (sélection unique)
+        price,                           // compat: sélection unique 1..4
+        price_min,
+        price_max,
+        rating_min,
+        rating_max,
         awarded,                         // true/false
         fresh,                           // true/false
         awards,                          // ex: 'timeout,michelin' (CSV awards providers)
@@ -403,42 +400,38 @@ export default async function poiRoutes(fastify) {
       // bornes défensives
       const maxLimit = Math.min(Math.max(parseInt(limit, 10) || 24, 1), 50);
 
-      // normalisations
-      const neighbourhoodName = capFromSlug(neighbourhood_slug);
-      const districtName = capFromSlug(district_slug);
-      
-      // Parse awards providers from CSV
       const awardsProviders = toArr(awards);
-      
-      // Gestion du prix (maintenant numérique 1,2,3,4)
-      const priceEnum =
-        price === '1' ? 'PRICE_LEVEL_INEXPENSIVE' :
-        price === '2' ? 'PRICE_LEVEL_MODERATE' :
-        price === '3' ? 'PRICE_LEVEL_EXPENSIVE' :
-        price === '4' ? 'PRICE_LEVEL_VERY_EXPENSIVE' : null;
-      
-      // Parsing des catégories multiples (AND)
-      const categories = category
-        ? category.split(',').map(c => c.trim()).filter(Boolean)
-        : null;
-      
-      // Parsing des sous-catégories multiples (AND)
-      const subcategories = subcategory
-        ? subcategory.split(',').map(sc => sc.trim()).filter(Boolean)
-        : null;
+
+      const categoryValues = toArr(category);
+      const categories = categoryValues?.length ? [categoryValues[0]] : null;
+      const subcategories = toArr(subcategory);
+      const districtSlugs = toArr(district_slug);
+      const neighbourhoodSlugs = toArr(neighbourhood_slug);
       
       // Filtres booléens
       const isAwarded = awarded === 'true' ? true : (awarded === 'false' ? false : null);
       const isFresh = fresh === 'true' ? true : (fresh === 'false' ? false : null);
 
       // Parsing des tags pour filtrage AND/OR
-      const tagsAll = tags
-        ? tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
-        : null;
+      const tagsAll = toArr(tags);
+      const tagsAny = toArr(tags_any);
 
-      const tagsAny = tags_any
-        ? tags_any.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
-        : null;
+      let priceMinBound = parsePriceBound(price_min);
+      let priceMaxBound = parsePriceBound(price_max);
+      const legacyPrice = parsePriceBound(price);
+      if (legacyPrice !== null) {
+        priceMinBound = priceMinBound ?? legacyPrice;
+        priceMaxBound = priceMaxBound ?? legacyPrice;
+      }
+      if (priceMinBound !== null && priceMaxBound !== null && priceMinBound > priceMaxBound) {
+        [priceMinBound, priceMaxBound] = [priceMaxBound, priceMinBound];
+      }
+
+      let ratingMinBound = parseRatingBound(rating_min);
+      let ratingMaxBound = parseRatingBound(rating_max);
+      if (ratingMinBound !== null && ratingMaxBound !== null && ratingMinBound > ratingMaxBound) {
+        [ratingMinBound, ratingMaxBound] = [ratingMaxBound, ratingMinBound];
+      }
 
       // Détermination de la colonne de tri pour le curseur (maintenant géré dans la RPC)
       let afterScore = null, afterId = null;
@@ -450,35 +443,22 @@ export default async function poiRoutes(fastify) {
         } catch {}
       }
       
-      // La colonne pour le curseur dépend du tri demandé
-      let segCol = 'gatto_score';
-      if (sort === 'price_desc' || sort === 'price_asc') {
-        segCol = 'price_level_numeric';
-      } else if (sort === 'mentions') {
-        segCol = 'mentions_count';
-      } else if (sort === 'rating') {
-        segCol = 'rating_value';
-      } else if (segment === 'digital') {
-        segCol = 'digital_score';
-      } else if (segment === 'awarded') {
-        segCol = 'awards_bonus';
-      } else if (segment === 'fresh') {
-        segCol = 'freshness_bonus';
-      }
-
       const rpcParams = {
         p_city_slug: city || 'paris',
         p_categories: categories && categories.length ? categories : null,
         p_subcategories: subcategories && subcategories.length ? subcategories : null,
-        p_price_level: priceEnum,
-        p_neighbourhood: neighbourhood_slug || null,
-        p_district: district_slug || null,
+        p_price_min: priceMinBound,
+        p_price_max: priceMaxBound,
+        p_rating_min: ratingMinBound,
+        p_rating_max: ratingMaxBound,
+        p_neighbourhood_slugs: neighbourhoodSlugs && neighbourhoodSlugs.length ? neighbourhoodSlugs : null,
+        p_district_slugs: districtSlugs && districtSlugs.length ? districtSlugs : null,
         p_tags_all: tagsAll && tagsAll.length ? tagsAll : null,
         p_tags_any: tagsAny && tagsAny.length ? tagsAny : null,
         p_awarded: isAwarded,
         p_fresh: isFresh,
         p_sort: sort || 'gatto',
-        p_segment: 'gatto',
+        p_segment: segment || 'gatto',
         p_limit: maxLimit,
         p_after_score: afterScore,
         p_after_id: afterId,
@@ -626,7 +606,7 @@ export default async function poiRoutes(fastify) {
       });
 
       // Cache key including awards for proper cache separation
-      const cacheKey = `poi:${city}:${category}:${subcategory}:${price}:${district_slug}:${neighbourhood_slug}:${awarded}:${fresh}:${awards}:${sort}:${limit}:${cursor}`;
+      const cacheKey = `poi:${city}:${categories?.[0] ?? ''}:${subcategories?.join('|') ?? ''}:${priceMinBound ?? ''}-${priceMaxBound ?? ''}:${districtSlugs?.join('|') ?? ''}:${neighbourhoodSlugs?.join('|') ?? ''}:${awarded}:${fresh}:${awards}:${sort}:${limit}:${cursor}:${ratingMinBound ?? ''}-${ratingMaxBound ?? ''}`;
 
       reply.header('Cache-Control', 'public, max-age=300');
       return reply.success({
