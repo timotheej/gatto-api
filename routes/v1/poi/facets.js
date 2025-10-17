@@ -46,7 +46,7 @@ const QuerySchema = z.object({
   city: z.string().default('paris'),
   district_slug: z.string().optional(),
   neighbourhood_slug: z.string().optional(),
-  category: z.string().optional(),
+  primary_type: z.string().optional(),
   subcategory: z.string().optional(),
   price: z.string().optional(),
   awarded: z.string().optional(),
@@ -81,8 +81,7 @@ export default async function poiFacetsRoutes(fastify) {
     
     const q = request.query || {};
 
-    const categorySlug        = parseSingleFromCsv(q.category, { lowercase: true });
-    const categories          = categorySlug ? [categorySlug] : null;
+    const primaryTypes        = parseCsvToArray(q.primary_type, { lowercase: true });
     const subcategories       = parseCsvToArray(q.subcategory, { lowercase: true });
     const tagsAll             = parseCsvToArray(q.tags, { lowercase: true });
     const tagsAny             = parseCsvToArray(q.tags_any, { lowercase: true });
@@ -106,7 +105,8 @@ export default async function poiFacetsRoutes(fastify) {
 
     const rpcParams = {
       p_city_slug:           q.city || 'paris',
-      p_categories:          categories,
+      p_primary_types:       primaryTypes,
+      p_categories:          primaryTypes,
       p_subcategories:       subcategories,
       p_price_min:           priceMin,
       p_price_max:           priceMax,
@@ -129,9 +129,9 @@ export default async function poiFacetsRoutes(fastify) {
 
     // Appel RPC
     try {
-      const { data, error } = await fastify.supabase.rpc('rpc_get_poi_facets', rpcParams);
+      const { data, error } = await fastify.supabase.rpc('rpc_get_pois_facets', rpcParams);
       if (error) {
-        fastify.log.error({ err: error, rpcParams }, 'rpc_get_poi_facets failed');
+        fastify.log.error({ err: error, rpcParams }, 'rpc_get_pois_facets failed');
         return reply.code(500).send({ success: false, error: 'Failed to compute facets' });
       }
       
@@ -143,7 +143,7 @@ export default async function poiFacetsRoutes(fastify) {
       return reply.send({ success: true, data: payload });
       
     } catch (e) {
-      fastify.log.error({ e, rpcParams }, 'Exception in rpc_get_poi_facets');
+      fastify.log.error({ e, rpcParams }, 'Exception in rpc_get_pois_facets');
       return reply.code(500).send({ success: false, error: 'Failed to compute facets' });
     }
 

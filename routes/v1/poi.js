@@ -41,21 +41,6 @@ function slugify(str) {
     .trim('-');
 }
 
-// Simple category pluralization for French
-function pluralizeCategoryFr(category) {
-  if (!category) return category;
-  
-  const exceptions = {
-    'bar': 'bars',
-    'café': 'cafés',
-    'restaurant': 'restaurants',
-    'boulangerie': 'boulangeries',
-    'patisserie': 'patisseries',
-    'hotel': 'hotels'
-  };
-  
-  return exceptions[category.toLowerCase()] || category + 's';
-}
 
 // ==== Keyset pagination helpers (score + id) ====
 function encodeKeysetCursor(obj) {
@@ -154,7 +139,7 @@ function adaptRpcRowToLegacyPoi(row) {
     name_fr: row.name_fr,
     slug_en: row.slug_en,
     slug_fr: row.slug_fr,
-    category: row.category,
+    primary_type: row.primary_type,
     address_street: row.address_street,
     city: row.city,
     country: row.country,
@@ -376,7 +361,7 @@ export default async function poiRoutes(fastify) {
       const {
         view = 'card',
         segment,                         // 'gatto' | 'digital' | 'awarded' | 'fresh' (optionnel)
-        category,                        // string (slug)
+        primary_type,                    // string (slug)
         subcategory,                     // sous-catégories multiples séparées par virgule (OR)
         neighbourhood_slug,              // CSV de slugs (ex: 'haut-marais,bastille')
         district_slug,                   // CSV de slugs (ex: '10e-arrondissement,11e-arrondissement')
@@ -402,8 +387,8 @@ export default async function poiRoutes(fastify) {
 
       const awardsProviders = toArr(awards);
 
-      const categoryValues = toArr(category);
-      const categories = categoryValues?.length ? [categoryValues[0]] : null;
+      const primaryTypeValues = toArr(primary_type);
+      const primaryTypes = primaryTypeValues?.length ? primaryTypeValues : null;
       const subcategories = toArr(subcategory);
       const districtSlugs = toArr(district_slug);
       const neighbourhoodSlugs = toArr(neighbourhood_slug);
@@ -445,7 +430,8 @@ export default async function poiRoutes(fastify) {
       
       const rpcParams = {
         p_city_slug: city || 'paris',
-        p_categories: categories && categories.length ? categories : null,
+        p_primary_types: primaryTypes && primaryTypes.length ? primaryTypes : null,
+        p_categories: primaryTypes && primaryTypes.length ? primaryTypes : null,
         p_subcategories: subcategories && subcategories.length ? subcategories : null,
         p_price_min: priceMinBound,
         p_price_max: priceMaxBound,
@@ -531,7 +517,7 @@ export default async function poiRoutes(fastify) {
           id: poi.id,
           slug: pickLang(poi, lang, 'slug'),
           name: pickLang(poi, lang, 'name'),
-          category: poi.category,
+          primary_type: poi.primary_type,
           subcategories: poi.__rpcMeta?.subcategories || [],
           district: poi.__rpcMeta?.district_slug,
           neighbourhood: poi.__rpcMeta?.neighbourhood_slug
@@ -606,7 +592,7 @@ export default async function poiRoutes(fastify) {
       });
 
       // Cache key including awards for proper cache separation
-      const cacheKey = `poi:${city}:${categories?.[0] ?? ''}:${subcategories?.join('|') ?? ''}:${priceMinBound ?? ''}-${priceMaxBound ?? ''}:${districtSlugs?.join('|') ?? ''}:${neighbourhoodSlugs?.join('|') ?? ''}:${awarded}:${fresh}:${awards}:${sort}:${limit}:${cursor}:${ratingMinBound ?? ''}-${ratingMaxBound ?? ''}`;
+      const cacheKey = `poi:${city}:${primaryTypes?.[0] ?? ''}:${subcategories?.join('|') ?? ''}:${priceMinBound ?? ''}-${priceMaxBound ?? ''}:${districtSlugs?.join('|') ?? ''}:${neighbourhoodSlugs?.join('|') ?? ''}:${awarded}:${fresh}:${awards}:${sort}:${limit}:${cursor}:${ratingMinBound ?? ''}-${ratingMaxBound ?? ''}`;
 
       reply.header('Cache-Control', 'public, max-age=300');
       return reply.success({
@@ -639,7 +625,7 @@ export default async function poiRoutes(fastify) {
           name_fr,
           slug_en,
           slug_fr,
-          category,
+          primary_type,
           address_street,
           city,
           country,
@@ -749,7 +735,7 @@ export default async function poiRoutes(fastify) {
         id: poi.id,
         slug: pickLang(poi, lang, 'slug'),
         name: pickLang(poi, lang, 'name'),
-        category: poi.category,
+        primary_type: poi.primary_type,
         city: poi.city,
         district: poi.district_name,
         neighbourhood: poi.neighbourhood_name,
