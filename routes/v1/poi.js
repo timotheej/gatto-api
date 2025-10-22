@@ -41,6 +41,18 @@ function slugify(str) {
     .trim('-');
 }
 
+// Parse bbox string to array
+function parseBbox(str) {
+  if (!str || typeof str !== 'string') return null;
+  const coords = str.split(',').map(s => Number.parseFloat(s.trim())).filter(n => !Number.isNaN(n));
+  if (coords.length !== 4) return null;
+  const [lat_min, lng_min, lat_max, lng_max] = coords;
+  // Basic validation
+  if (lat_min >= lat_max || lng_min >= lng_max) return null;
+  if (lat_min < -90 || lat_max > 90 || lng_min < -180 || lng_max > 180) return null;
+  return [lat_min, lng_min, lat_max, lng_max];
+}
+
 
 // ==== Keyset pagination helpers (score + id) ====
 function encodeKeysetCursor(obj) {
@@ -375,6 +387,7 @@ export default async function poiRoutes(fastify) {
         awarded,                         // true/false
         fresh,                           // true/false
         awards,                          // ex: 'timeout,michelin' (CSV awards providers)
+        bbox,                            // lat_min,lng_min,lat_max,lng_max
         sort = 'gatto',                  // gatto|price_desc|price_asc|mentions|rating
         city = 'paris',
         limit = 24,
@@ -392,6 +405,7 @@ export default async function poiRoutes(fastify) {
       const subcategories = toArr(subcategory);
       const districtSlugs = toArr(district_slug);
       const neighbourhoodSlugs = toArr(neighbourhood_slug);
+      const bboxArray = parseBbox(bbox);
       
       // Filtres booléens
       const isAwarded = awarded === 'true' ? true : (awarded === 'false' ? false : null);
@@ -431,7 +445,6 @@ export default async function poiRoutes(fastify) {
       const rpcParams = {
         p_city_slug: city || 'paris',
         p_primary_types: primaryTypes && primaryTypes.length ? primaryTypes : null,
-        p_categories: primaryTypes && primaryTypes.length ? primaryTypes : null,
         p_subcategories: subcategories && subcategories.length ? subcategories : null,
         p_price_min: priceMinBound,
         p_price_max: priceMaxBound,
@@ -439,6 +452,7 @@ export default async function poiRoutes(fastify) {
         p_rating_max: ratingMaxBound,
         p_neighbourhood_slugs: neighbourhoodSlugs && neighbourhoodSlugs.length ? neighbourhoodSlugs : null,
         p_district_slugs: districtSlugs && districtSlugs.length ? districtSlugs : null,
+        p_bbox: bboxArray,
         p_tags_all: tagsAll && tagsAll.length ? tagsAll : null,
         p_tags_any: tagsAny && tagsAny.length ? tagsAny : null,
         p_awarded: isAwarded,
@@ -464,8 +478,8 @@ export default async function poiRoutes(fastify) {
         
         const getCursorKey = (item) => {
           switch (sort) {
-            case 'price_desc': return item.price_level_numeric;
-            case 'price_asc':  return -item.price_level_numeric;
+            case 'price_desc': return item.price_level_numeric ?? 0;
+            case 'price_asc':  return -(item.price_level_numeric ?? 0);
             case 'mentions':   return item.mentions_count ?? 0;
             case 'rating':     return item.rating_value ?? 0;
             case 'gatto':
@@ -520,7 +534,8 @@ export default async function poiRoutes(fastify) {
           primary_type: poi.primary_type,
           subcategories: poi.__rpcMeta?.subcategories || [],
           district: poi.__rpcMeta?.district_slug,
-          neighbourhood: poi.__rpcMeta?.neighbourhood_slug
+          neighbourhood: poi.__rpcMeta?.neighbourhood_slug,
+          coords: { lat: Number(poi.lat), lng: Number(poi.lng) }
         };
 
         if (photo) item.photo = photo;
@@ -591,8 +606,8 @@ export default async function poiRoutes(fastify) {
         return filterFields(item, fields);
       });
 
-      // Cache key including awards for proper cache separation
-      const cacheKey = `poi:${city}:${primaryTypes?.[0] ?? ''}:${subcategories?.join('|') ?? ''}:${priceMinBound ?? ''}-${priceMaxBound ?? ''}:${districtSlugs?.join('|') ?? ''}:${neighbourhoodSlugs?.join('|') ?? ''}:${awarded}:${fresh}:${awards}:${sort}:${limit}:${cursor}:${ratingMinBound ?? ''}-${ratingMaxBound ?? ''}`;
+      // Cache key including bbox for proper cache separation
+      const cacheKey = `poi:${city}:${primaryTypes?.[0] ?? ''}:${subcategories?.join('|') ?? ''}:${priceMinBound ?? ''}-${priceMaxBound ?? ''}:${districtSlugs?.join('|') ?? ''}:${neighbourhoodSlugs?.join('|') ?? ''}:${bboxArray?.join(',') ?? ''}:${awarded}:${fresh}:${awards}:${sort}:${limit}:${cursor}:${ratingMinBound ?? ''}-${ratingMaxBound ?? ''}`;
 
       reply.header('Cache-Control', 'public, max-age=300');
       return reply.success({
