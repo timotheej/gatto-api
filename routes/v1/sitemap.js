@@ -89,22 +89,31 @@ export default async function sitemapRoutes(fastify) {
 
       const ids = pois.map((p) => p.id);
 
-      // --- 3) Fetch latest scores in bulk ---
-      const { data: scores, error: scoresError } = await fastify.supabase
-        .from("latest_gatto_scores")
-        .select("poi_id, gatto_score")
-        .in("poi_id", ids);
+      // --- 3) Fetch latest scores in bulk (with batching for large requests) ---
+      // PostgREST has URL length limits, so we batch the .in() queries
+      const BATCH_SIZE = 100;
+      const allScores = [];
 
-      if (scoresError) {
-        fastify.log.warn(
-          { error: scoresError },
-          "Failed to fetch scores for sitemap, continuing with defaults"
-        );
+      for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+        const batchIds = ids.slice(i, i + BATCH_SIZE);
+        const { data: batchScores, error: scoresError } = await fastify.supabase
+          .from("latest_gatto_scores")
+          .select("poi_id, gatto_score")
+          .in("poi_id", batchIds);
+
+        if (scoresError) {
+          fastify.log.warn(
+            { error: scoresError, batch: i / BATCH_SIZE + 1 },
+            "Failed to fetch scores batch for sitemap, continuing with defaults"
+          );
+        } else if (batchScores) {
+          allScores.push(...batchScores);
+        }
       }
 
       // Build score map for O(1) lookup
       const scoreById = new Map(
-        (scores || []).map((s) => [s.poi_id, s.gatto_score])
+        allScores.map((s) => [s.poi_id, s.gatto_score])
       );
 
       // --- 4) Build response items (score 0–5 expected by sitemap builder) ---
