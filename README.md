@@ -47,7 +47,8 @@ L'API sera disponible sur `http://localhost:3000`
 │       ├── index.js       # Route racine /v1
 │       ├── poi.js         # Points d'intérêt
 │       ├── collections.js # Collections
-│       └── home.js        # Page d'accueil
+│       ├── home.js        # Page d'accueil
+│       └── sitemap.js     # Sitemap pour SEO
 ├── utils/
 │   └── responses.js       # Helpers de réponse
 └── .env.example          # Variables d'environnement
@@ -83,13 +84,54 @@ L'API sera disponible sur `http://localhost:3000`
 
 ### Routes v1
 
-- `GET /v1/poi` - Points d'intérêt (à implémenter)
-- `GET /v1/collections` - Collections (à implémenter)
-- `GET /v1/home` - Page d'accueil (à implémenter)
+- `GET /v1/poi` - Points d'intérêt (liste paginée avec filtres)
+- `GET /v1/poi/:slug` - Détail d'un point d'intérêt
+- `GET /v1/collections` - Collections de POIs
+- `GET /v1/home` - Données pour la page d'accueil
+- `GET /v1/sitemap/pois` - POIs éligibles pour sitemap XML (paginé)
 
-### Paramètres
+### Paramètres généraux
 
 - `?lang=fr|en` - Langue (français par défaut)
+
+### Endpoint Sitemap
+
+`GET /v1/sitemap/pois` - Liste paginée de tous les POIs éligibles pour la génération de sitemap XML.
+
+**Paramètres** :
+
+- `page` (integer, défaut: 1) - Numéro de page
+- `limit` (integer, défaut: 500, max: 1000) - Nombre d'éléments par page
+
+**Réponse** :
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "slug": "le-procope",
+        "updated_at": "2024-01-15T10:30:00Z",
+        "score": 4.5
+      }
+    ],
+    "pagination": {
+      "total": 1234,
+      "page": 1,
+      "limit": 500,
+      "has_next": true
+    }
+  }
+}
+```
+
+**Notes** :
+
+- Score converti de 0-100 à 0-5 pour compatibilité sitemap
+- Cache HTTP de 5 minutes
+- Filtré sur `publishable_status = 'eligible'`
+- Voir `docs/SITEMAP_ENDPOINT.md` pour plus de détails
 
 ### Réponses
 
@@ -128,6 +170,7 @@ Format d'erreur :
 ## 📦 Déploiement
 
 Le projet est configuré pour être déployé sur :
+
 - **Vercel** (recommandé)
 - **Render**
 - Tout service supportant Node.js
