@@ -19,6 +19,18 @@ Remplacer l'utilisation de `list_pois_segment` par un RPC plus simple et perform
   - `latest_gatto_scores`
   - `latest_google_rating`
 
+## ⚠️ Corrections importantes
+
+**Version corrigée** : Commit `dcbc37e` (2024-11-05)
+
+Corrections apportées :
+- ✅ **Colonnes coordonnées** : Utilisation de `lat`/`lng` au lieu de `coordinates_lat`/`coordinates_lng`
+- ✅ **Prix calculé inline** : `price_level_numeric` est maintenant calculé inline au lieu d'être une colonne CTE
+
+**Important** : Utilisez la dernière version de `list_pois_rpc.sql` depuis la branch.
+
+---
+
 ## 🚀 Étapes de déploiement
 
 ### 1. Exécuter le script SQL
