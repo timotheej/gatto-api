@@ -7,7 +7,14 @@ async function routes(fastify, options) {
     return reply.success({
       status: "ok",
       version: "1.0",
-      endpoints: ["/v1/poi", "/v1/collections", "/v1/home", "/v1/sitemap/pois"],
+      endpoints: [
+        "/v1/pois",
+        "/v1/pois/:slug",
+        "/v1/pois/facets",
+        "/v1/collections",
+        "/v1/home",
+        "/v1/sitemap/pois"
+      ],
       uptime: Math.floor(uptime / 1000),
     });
   });

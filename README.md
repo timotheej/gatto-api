@@ -83,8 +83,9 @@ L'API sera disponible sur `http://localhost:3000`
 
 ### Routes v1
 
-- `GET /v1/poi` - Points d'intérêt (liste paginée avec filtres)
-- `GET /v1/poi/:slug` - Détail d'un point d'intérêt
+- `GET /v1/pois` - Points d'intérêt (liste paginée avec filtres, bbox pour map)
+- `GET /v1/pois/:slug` - Détail d'un point d'intérêt
+- `GET /v1/pois/facets` - Facettes pour filtres (catégories, prix, etc.)
 - `GET /v1/collections` - Collections de POIs
 - `GET /v1/home` - Données pour la page d'accueil
 - `GET /v1/sitemap/pois` - POIs éligibles pour sitemap XML (paginé)
