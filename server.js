@@ -12,8 +12,6 @@ import rateLimitPlugin from "./plugins/rate-limit.js";
 import responsesPlugin from "./utils/responses.js";
 
 import v1Routes from "./routes/v1/index.js";
-import poiRoutes from "./routes/v1/poi.js";
-import poiFacetsRoutes from "./routes/v1/poi/facets.js";
 import poisRoutes from "./routes/v1/pois.js";
 import poisFacetsRoutes from "./routes/v1/pois/facets.js";
 import collectionsRoutes from "./routes/v1/collections.js";
@@ -44,11 +42,7 @@ async function build() {
 
     await fastify.register(v1Routes, { prefix: "/v1" });
 
-    // Legacy routes (keep for backward compatibility)
-    await fastify.register(poiRoutes, { prefix: "/v1" });
-    await fastify.register(poiFacetsRoutes);
-
-    // New optimized routes
+    // POI routes
     await fastify.register(poisRoutes, { prefix: "/v1" });
     await fastify.register(poisFacetsRoutes);
 
