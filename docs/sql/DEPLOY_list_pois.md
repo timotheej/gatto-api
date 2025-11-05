@@ -19,7 +19,41 @@ Remplacer l'utilisation de `list_pois_segment` par un RPC plus simple et perform
   - `latest_gatto_scores`
   - `latest_google_rating`
 
+## ⚠️ Corrections importantes
+
+**Version corrigée** : Commit `dcbc37e` (2024-11-05)
+
+Corrections apportées :
+- ✅ **Colonnes coordonnées** : Utilisation de `lat`/`lng` au lieu de `coordinates_lat`/`coordinates_lng`
+- ✅ **Prix calculé inline** : `price_level_numeric` est maintenant calculé inline au lieu d'être une colonne CTE
+
+**Important** : Utilisez la dernière version de `list_pois_rpc.sql` depuis la branch.
+
+---
+
 ## 🚀 Étapes de déploiement
+
+### ⚠️ ÉTAPE 0 : DROP la fonction existante (OBLIGATOIRE)
+
+**TRÈS IMPORTANT** : PostgreSQL ne modifie **PAS** les types de retour avec `CREATE OR REPLACE FUNCTION`.
+
+Vous **DEVEZ** supprimer la fonction avant de la recréer :
+
+```sql
+-- Exécuter drop_list_pois.sql dans Supabase SQL Editor
+DROP FUNCTION IF EXISTS list_pois(
+  double precision[], text, text[], text[], text[], text[], text[], text[], text[],
+  integer, integer, numeric, numeric, boolean, boolean, text, integer
+);
+```
+
+Ou utiliser le fichier dédié :
+```bash
+cat docs/sql/drop_list_pois.sql
+# Copier et exécuter dans Supabase
+```
+
+---
 
 ### 1. Exécuter le script SQL
 

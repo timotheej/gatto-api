@@ -59,14 +59,14 @@ RETURNS TABLE(
   ai_summary_fr TEXT,
   tags JSONB,
   tags_flat TEXT[],
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP,
+  created_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ,
   -- Scores
   gatto_score NUMERIC,
   digital_score NUMERIC,
   awards_bonus NUMERIC,
   freshness_bonus NUMERIC,
-  calculated_at TIMESTAMP,
+  calculated_at TIMESTAMPTZ,
   -- Rating
   rating_value NUMERIC,
   rating_reviews_count INT,
@@ -201,13 +201,6 @@ BEGIN
       lower(p.primary_type::text) AS primary_type_slug,
       (SELECT array_agg(lower(v)) FROM unnest(p.subcategories) AS v) AS subcategories_lc,
       public.tags_to_text_arr_deep(p.tags) AS tags_flat,
-      CASE p.price_level
-        WHEN 'PRICE_LEVEL_INEXPENSIVE'    THEN 1
-        WHEN 'PRICE_LEVEL_MODERATE'       THEN 2
-        WHEN 'PRICE_LEVEL_EXPENSIVE'      THEN 3
-        WHEN 'PRICE_LEVEL_VERY_EXPENSIVE' THEN 4
-        ELSE NULL
-      END AS price_level_numeric,
       lower(p.district_slug)      AS district_slug_lc,
       lower(p.neighbourhood_slug) AS neighbourhood_slug_lc,
       -- awards providers à partir des tags
@@ -247,8 +240,22 @@ BEGIN
       -- Other filters
       AND (n.primary_types_lc IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
       AND (n.subcategories_lc IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
-      AND (n.price_min IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
-      AND (n.price_max IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
+      AND (n.price_min IS NULL OR (
+        CASE b.price_level
+          WHEN 'PRICE_LEVEL_INEXPENSIVE' THEN 1
+          WHEN 'PRICE_LEVEL_MODERATE' THEN 2
+          WHEN 'PRICE_LEVEL_EXPENSIVE' THEN 3
+          WHEN 'PRICE_LEVEL_VERY_EXPENSIVE' THEN 4
+        END >= n.price_min
+      ))
+      AND (n.price_max IS NULL OR (
+        CASE b.price_level
+          WHEN 'PRICE_LEVEL_INEXPENSIVE' THEN 1
+          WHEN 'PRICE_LEVEL_MODERATE' THEN 2
+          WHEN 'PRICE_LEVEL_EXPENSIVE' THEN 3
+          WHEN 'PRICE_LEVEL_VERY_EXPENSIVE' THEN 4
+        END <= n.price_max
+      ))
       AND (n.rating_min IS NULL OR b.rating_value >= n.rating_min)
       AND (n.rating_max IS NULL OR b.rating_value <= n.rating_max)
       AND (n.district_slugs_lc    IS NULL OR (b.district_slug     IS NOT NULL AND b.district_slug_lc      = ANY(n.district_slugs_lc)))
@@ -267,8 +274,20 @@ BEGIN
     SELECT
       f.*,
       CASE v_sort
-        WHEN 'price_desc' THEN COALESCE(f.price_level_numeric, 0)::numeric
-        WHEN 'price_asc'  THEN -COALESCE(f.price_level_numeric, 0)::numeric
+        WHEN 'price_desc' THEN COALESCE(
+          CASE f.price_level
+            WHEN 'PRICE_LEVEL_INEXPENSIVE' THEN 1
+            WHEN 'PRICE_LEVEL_MODERATE' THEN 2
+            WHEN 'PRICE_LEVEL_EXPENSIVE' THEN 3
+            WHEN 'PRICE_LEVEL_VERY_EXPENSIVE' THEN 4
+          END, 0)::numeric
+        WHEN 'price_asc' THEN -COALESCE(
+          CASE f.price_level
+            WHEN 'PRICE_LEVEL_INEXPENSIVE' THEN 1
+            WHEN 'PRICE_LEVEL_MODERATE' THEN 2
+            WHEN 'PRICE_LEVEL_EXPENSIVE' THEN 3
+            WHEN 'PRICE_LEVEL_VERY_EXPENSIVE' THEN 4
+          END, 0)::numeric
         WHEN 'mentions'   THEN f.mentions_count::numeric
         WHEN 'rating'     THEN f.rating_value
         ELSE f.gatto_score
@@ -296,7 +315,13 @@ BEGIN
     s.lng::double precision,
     s.opening_hours,
     s.price_level::text,
-    s.price_level_numeric,
+    CASE s.price_level
+      WHEN 'PRICE_LEVEL_INEXPENSIVE' THEN 1
+      WHEN 'PRICE_LEVEL_MODERATE' THEN 2
+      WHEN 'PRICE_LEVEL_EXPENSIVE' THEN 3
+      WHEN 'PRICE_LEVEL_VERY_EXPENSIVE' THEN 4
+      ELSE NULL
+    END::int as price_level_numeric,
     s.phone::text,
     s.website::text,
     s.district_slug::text,
@@ -328,12 +353,12 @@ $$ LANGUAGE plpgsql STABLE;
 -- ==================================================
 
 -- Spatial index for bbox filtering (if not exists)
-CREATE INDEX IF NOT EXISTS poi_coordinates_idx
-ON poi (coordinates_lat, coordinates_lng);
+CREATE INDEX IF NOT EXISTS poi_lat_lng_idx
+ON poi (lat, lng);
 
 -- Composite index for common query patterns
 CREATE INDEX IF NOT EXISTS poi_map_query_idx
-ON poi (publishable_status, city_slug, coordinates_lat, coordinates_lng)
+ON poi (publishable_status, city_slug, lat, lng)
 WHERE publishable_status = 'eligible';
 
 -- Index for primary_type filtering
@@ -356,9 +381,9 @@ ON poi (neighbourhood_slug);
 CREATE INDEX IF NOT EXISTS poi_district_slug_idx
 ON poi (district_slug);
 
--- Index for price filtering
-CREATE INDEX IF NOT EXISTS poi_price_level_numeric_idx
-ON poi (price_level_numeric);
+-- Index for price filtering (on TEXT column, not numeric)
+CREATE INDEX IF NOT EXISTS poi_price_level_idx
+ON poi (price_level);
 
 -- ==================================================
 -- Usage example

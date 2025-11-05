@@ -1,3 +1,28 @@
+import { LRUCache } from 'lru-cache';
+
+// ==== CACHE CONFIGURATION ====
+
+// LRU cache for POI responses (5 minutes TTL, max 500 entries)
+const poisCache = new LRUCache({
+  max: 500,               // Max 500 entries
+  ttl: 1000 * 60 * 5,     // 5 minutes TTL
+  updateAgeOnGet: true,   // Reset TTL on cache hit
+  updateAgeOnHas: false
+});
+
+// Generate stable cache key from params
+function getCacheKey(prefix, params) {
+  const sortedParams = Object.keys(params)
+    .sort()
+    .reduce((acc, key) => {
+      if (params[key] !== undefined && params[key] !== null) {
+        acc[key] = Array.isArray(params[key]) ? params[key].join(',') : params[key];
+      }
+      return acc;
+    }, {});
+  return `${prefix}:${JSON.stringify(sortedParams)}`;
+}
+
 // ==== HELPERS ====
 
 // Parse CSV string to array of lowercase strings
@@ -87,22 +112,9 @@ function photoBlockFrom(variantsIndex, photo, wantedKeyPrefix) {
 
 // ==== BUSINESS LOGIC ====
 
-// Enriches POIs with photos and variants
-async function enrichWithPhotos(fastify, poiIds, variantKeys = ['card_sq@1x', 'card_sq@2x']) {
+// Enriches POIs with photos and variants (OPTIMIZED with JOIN - 2 queries → 1 query)
+async function enrichWithPhotos(fastify, poiIds, variantKeys = ['card_sq']) {
   if (!poiIds.length) return { photos: {}, variants: {} };
-
-  // Fetch photos
-  const { data: photosData } = await fastify.supabase
-    .from('poi_photos')
-    .select('id, poi_id, dominant_color, blurhash, is_primary, width, height, cdn_url, format')
-    .in('poi_id', poiIds)
-    .eq('status', 'active')
-    .order('is_primary', { ascending: false })
-    .order('position', { ascending: true });
-
-  if (!photosData?.length) return { photos: {}, variants: {} };
-
-  const photoIds = photosData.map(p => p.id);
 
   // Build variant keys with all density variants
   const allVariantKeys = [];
@@ -114,29 +126,81 @@ async function enrichWithPhotos(fastify, poiIds, variantKeys = ['card_sq@1x', 'c
     }
   });
 
-  // Fetch variants
-  const { data: variantsData } = await fastify.supabase
-    .from('poi_photo_variants')
-    .select('photo_id, variant_key, cdn_url, format, width, height')
-    .in('photo_id', photoIds)
-    .in('variant_key', allVariantKeys);
+  // OPTIMIZED: Single query with JOIN (instead of 2 sequential queries)
+  const { data: photosWithVariants } = await fastify.supabase
+    .from('poi_photos')
+    .select(`
+      id,
+      poi_id,
+      dominant_color,
+      blurhash,
+      is_primary,
+      width,
+      height,
+      cdn_url,
+      format,
+      position,
+      poi_photo_variants!inner (
+        variant_key,
+        cdn_url,
+        format,
+        width,
+        height
+      )
+    `)
+    .in('poi_id', poiIds)
+    .eq('status', 'active')
+    .in('poi_photo_variants.variant_key', allVariantKeys)
+    .order('is_primary', { ascending: false })
+    .order('position', { ascending: true });
 
-  // Organize by poi_id
+  if (!photosWithVariants?.length) return { photos: {}, variants: {} };
+
+  // Organize by poi_id and photo_id
   const photosByPoi = {};
   const variantsByPhoto = {};
+  const seenPhotos = new Set();
 
-  photosData.forEach(photo => {
-    if (!photosByPoi[photo.poi_id]) {
-      photosByPoi[photo.poi_id] = [];
+  photosWithVariants.forEach(photo => {
+    // Add photo to photosByPoi (deduplicate)
+    if (!seenPhotos.has(photo.id)) {
+      if (!photosByPoi[photo.poi_id]) {
+        photosByPoi[photo.poi_id] = [];
+      }
+      photosByPoi[photo.poi_id].push({
+        id: photo.id,
+        poi_id: photo.poi_id,
+        dominant_color: photo.dominant_color,
+        blurhash: photo.blurhash,
+        is_primary: photo.is_primary,
+        width: photo.width,
+        height: photo.height,
+        cdn_url: photo.cdn_url,
+        format: photo.format
+      });
+      seenPhotos.add(photo.id);
     }
-    photosByPoi[photo.poi_id].push(photo);
-  });
 
-  variantsData?.forEach(variant => {
-    if (!variantsByPhoto[variant.photo_id]) {
-      variantsByPhoto[variant.photo_id] = [];
+    // Add variants
+    if (photo.poi_photo_variants) {
+      const variants = Array.isArray(photo.poi_photo_variants)
+        ? photo.poi_photo_variants
+        : [photo.poi_photo_variants];
+
+      variants.forEach(variant => {
+        if (!variantsByPhoto[photo.id]) {
+          variantsByPhoto[photo.id] = [];
+        }
+        variantsByPhoto[photo.id].push({
+          photo_id: photo.id,
+          variant_key: variant.variant_key,
+          cdn_url: variant.cdn_url,
+          format: variant.format,
+          width: variant.width,
+          height: variant.height
+        });
+      });
     }
-    variantsByPhoto[variant.photo_id].push(variant);
   });
 
   return { photos: photosByPoi, variants: variantsByPhoto };
@@ -181,6 +245,38 @@ export default async function poisRoutes(fastify) {
           timestamp: new Date().toISOString()
         });
       }
+
+      // Check cache
+      const cacheKey = getCacheKey('pois', {
+        bbox: bboxArray.join(','),
+        city,
+        primary_type,
+        subcategory,
+        neighbourhood_slug,
+        district_slug,
+        tags,
+        tags_any,
+        awards,
+        awarded,
+        fresh,
+        price,
+        price_min,
+        price_max,
+        rating_min,
+        rating_max,
+        sort,
+        limit
+      });
+
+      const cached = poisCache.get(cacheKey);
+      if (cached) {
+        fastify.log.info({ cacheKey, endpoint: '/v1/pois' }, 'Cache HIT');
+        reply.header('X-Cache', 'HIT');
+        reply.header('Cache-Control', 'public, max-age=600');
+        return reply.send(cached);
+      }
+
+      fastify.log.info({ cacheKey, endpoint: '/v1/pois' }, 'Cache MISS');
 
       // Parse parameters
       const maxLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 80);
@@ -318,17 +414,23 @@ export default async function poisRoutes(fastify) {
         };
       });
 
-      // Cache for 10 minutes
-      reply.header('Cache-Control', 'public, max-age=600');
-
-      return reply.send({
+      // Build response
+      const response = {
         success: true,
         data: {
           pois: items,
           total: items.length
         },
         timestamp: new Date().toISOString()
-      });
+      };
+
+      // Store in cache
+      poisCache.set(cacheKey, response);
+
+      // Send response
+      reply.header('X-Cache', 'MISS');
+      reply.header('Cache-Control', 'public, max-age=600');
+      return reply.send(response);
 
     } catch (err) {
       fastify.log.error('GET /pois error:', err);
@@ -345,6 +447,18 @@ export default async function poisRoutes(fastify) {
     try {
       const { slug } = request.params;
       const lang = fastify.getLang(request);
+
+      // Check cache
+      const cacheKey = getCacheKey('poi-detail', { slug, lang });
+      const cached = poisCache.get(cacheKey);
+      if (cached) {
+        fastify.log.info({ cacheKey, endpoint: '/v1/pois/:slug' }, 'Cache HIT');
+        reply.header('X-Cache', 'HIT');
+        reply.header('Cache-Control', 'public, max-age=600');
+        return reply.send(cached);
+      }
+
+      fastify.log.info({ cacheKey, endpoint: '/v1/pois/:slug' }, 'Cache MISS');
 
       // Fetch POI by slug (support both language variants)
       const { data: poi, error: poiError } = await fastify.supabase
@@ -498,14 +612,20 @@ export default async function poisRoutes(fastify) {
         breadcrumb
       };
 
-      // Cache for 10 minutes
-      reply.header('Cache-Control', 'public, max-age=600');
-
-      return reply.send({
+      // Build final response
+      const finalResponse = {
         success: true,
         data: response,
         timestamp: new Date().toISOString()
-      });
+      };
+
+      // Store in cache
+      poisCache.set(cacheKey, finalResponse);
+
+      // Send response
+      reply.header('X-Cache', 'MISS');
+      reply.header('Cache-Control', 'public, max-age=600');
+      return reply.send(finalResponse);
 
     } catch (err) {
       fastify.log.error('GET /pois/:slug error:', err);
