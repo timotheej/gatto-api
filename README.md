@@ -59,8 +59,7 @@ L'API sera disponible sur `http://localhost:3000`
 ### Variables d'environnement
 
 - `SUPABASE_URL` - URL de votre projet Supabase
-- `SUPABASE_ANON_KEY` - Clé anonyme Supabase
-- `SUPABASE_SERVICE_KEY` - Clé de service Supabase
+- `SUPABASE_SERVICE_ROLE_KEY` - Clé de service Supabase (service_role)
 - `PORT` - Port du serveur (défaut: 3000)
 - `NODE_ENV` - Environnement (production/development)
 - `CORS_ORIGIN` - Origines CORS autorisées

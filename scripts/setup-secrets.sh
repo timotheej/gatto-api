@@ -66,7 +66,6 @@ echo "🔧 Setting up Supabase secrets:"
 echo ""
 
 set_secret "SUPABASE_URL" "Supabase project URL" "$SUPABASE_URL"
-set_secret "SUPABASE_ANON_KEY" "Supabase anon key" "$SUPABASE_ANON_KEY"
 set_secret "SUPABASE_SERVICE_ROLE_KEY" "Supabase service role key" "$SUPABASE_SERVICE_ROLE_KEY"
 
 echo "🔧 Additional secrets (optional):"
