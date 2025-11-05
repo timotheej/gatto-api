@@ -4,7 +4,7 @@ import {
   PoiDetailParamsSchema,
   PoiDetailQuerySchema,
   formatZodErrors
-} from '../utils/validation.js';
+} from '../../utils/validation.js';
 
 // ==== CACHE CONFIGURATION ====
 
