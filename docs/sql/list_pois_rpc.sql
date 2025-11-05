@@ -381,9 +381,9 @@ ON poi (neighbourhood_slug);
 CREATE INDEX IF NOT EXISTS poi_district_slug_idx
 ON poi (district_slug);
 
--- Index for price filtering
-CREATE INDEX IF NOT EXISTS poi_price_level_numeric_idx
-ON poi (price_level_numeric);
+-- Index for price filtering (on TEXT column, not numeric)
+CREATE INDEX IF NOT EXISTS poi_price_level_idx
+ON poi (price_level);
 
 -- ==================================================
 -- Usage example
