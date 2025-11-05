@@ -328,12 +328,12 @@ $$ LANGUAGE plpgsql STABLE;
 -- ==================================================
 
 -- Spatial index for bbox filtering (if not exists)
-CREATE INDEX IF NOT EXISTS poi_coordinates_idx
-ON poi (coordinates_lat, coordinates_lng);
+CREATE INDEX IF NOT EXISTS poi_lat_lng_idx
+ON poi (lat, lng);
 
 -- Composite index for common query patterns
 CREATE INDEX IF NOT EXISTS poi_map_query_idx
-ON poi (publishable_status, city_slug, coordinates_lat, coordinates_lng)
+ON poi (publishable_status, city_slug, lat, lng)
 WHERE publishable_status = 'eligible';
 
 -- Index for primary_type filtering
