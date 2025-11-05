@@ -1,4 +1,10 @@
 import { LRUCache } from 'lru-cache';
+import {
+  PoisQuerySchema,
+  PoiDetailParamsSchema,
+  PoiDetailQuerySchema,
+  formatZodErrors
+} from '../utils/validation.js';
 
 // ==== CACHE CONFIGURATION ====
 
@@ -213,28 +219,31 @@ export default async function poisRoutes(fastify) {
   // GET /v1/pois - Map + List view (optimized, no cursor pagination)
   fastify.get('/pois', async (request, reply) => {
     try {
-      const lang = fastify.getLang(request);
+      // Validate query parameters with Zod
+      const validatedQuery = PoisQuerySchema.parse(request.query);
+
+      const lang = validatedQuery.lang || fastify.getLang(request);
 
       const {
-        bbox,                            // REQUIRED: lat_min,lng_min,lat_max,lng_max
-        city = 'paris',
+        bbox,
+        city,
         primary_type,
         subcategory,
         neighbourhood_slug,
         district_slug,
-        tags,                            // AND logic
-        tags_any,                        // OR logic
-        awards,                          // CSV awards providers
-        awarded,                         // true/false
-        fresh,                           // true/false
-        price,                           // legacy: single price 1-4
+        tags,
+        tags_any,
+        awards,
+        awarded,
+        fresh,
+        price,
         price_min,
         price_max,
         rating_min,
         rating_max,
-        sort = 'gatto',                  // gatto|price_desc|price_asc|mentions|rating
-        limit = 50,
-      } = request.query;
+        sort,
+        limit
+      } = validatedQuery;
 
       // Validate bbox (required)
       const bboxArray = parseBbox(bbox);
@@ -433,6 +442,17 @@ export default async function poisRoutes(fastify) {
       return reply.send(response);
 
     } catch (err) {
+      // Handle Zod validation errors
+      if (err.name === 'ZodError') {
+        return reply.code(400).send({
+          success: false,
+          error: 'Invalid query parameters',
+          details: formatZodErrors(err),
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Handle other errors
       fastify.log.error('GET /pois error:', err);
       return reply.code(500).send({
         success: false,
@@ -445,8 +465,12 @@ export default async function poisRoutes(fastify) {
   // GET /v1/pois/:slug - POI detail view
   fastify.get('/pois/:slug', async (request, reply) => {
     try {
-      const { slug } = request.params;
-      const lang = fastify.getLang(request);
+      // Validate path and query parameters with Zod
+      const validatedParams = PoiDetailParamsSchema.parse(request.params);
+      const validatedQuery = PoiDetailQuerySchema.parse(request.query);
+
+      const { slug } = validatedParams;
+      const lang = validatedQuery.lang || fastify.getLang(request);
 
       // Check cache
       const cacheKey = getCacheKey('poi-detail', { slug, lang });
@@ -628,6 +652,17 @@ export default async function poisRoutes(fastify) {
       return reply.send(finalResponse);
 
     } catch (err) {
+      // Handle Zod validation errors
+      if (err.name === 'ZodError') {
+        return reply.code(400).send({
+          success: false,
+          error: 'Invalid parameters',
+          details: formatZodErrors(err),
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Handle other errors
       fastify.log.error('GET /pois/:slug error:', err);
       return reply.code(500).send({
         success: false,

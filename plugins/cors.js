@@ -13,24 +13,18 @@ async function corsPlugin(fastify) {
     'http://127.0.0.1:3001'     // Alternative
   ];
   
-  // Combine origins based on environment
-  let corsOrigins = defaultOrigins;
-  
-  if (process.env.CORS_ORIGIN) {
-    corsOrigins = process.env.CORS_ORIGIN.split(',');
-  } else if (process.env.NODE_ENV !== 'production') {
-    // In development, allow both local and production origins
-    corsOrigins = [...defaultOrigins, ...localOrigins];
-  }
-  
-  console.log('🔧 CORS Configuration:', {
-    NODE_ENV: process.env.NODE_ENV,
-    corsOrigins,
-    localOrigins
-  });
-  
+  // Combine origins based on environment (always use whitelist)
+  const allowedOrigins = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(',')
+    : process.env.NODE_ENV !== 'production'
+      ? [...defaultOrigins, ...localOrigins]
+      : defaultOrigins;
+
+  // Use logger instead of console.log
+  fastify.log.debug({ allowedOrigins }, 'CORS configured');
+
   await fastify.register(cors, {
-    origin: process.env.NODE_ENV === 'development' ? true : corsOrigins, // Allow all origins in dev
+    origin: allowedOrigins, // Always use whitelist, never `true`
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key']
