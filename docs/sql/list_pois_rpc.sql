@@ -59,14 +59,14 @@ RETURNS TABLE(
   ai_summary_fr TEXT,
   tags JSONB,
   tags_flat TEXT[],
-  created_at TIMESTAMP,
-  updated_at TIMESTAMP,
+  created_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ,
   -- Scores
   gatto_score NUMERIC,
   digital_score NUMERIC,
   awards_bonus NUMERIC,
   freshness_bonus NUMERIC,
-  calculated_at TIMESTAMP,
+  calculated_at TIMESTAMPTZ,
   -- Rating
   rating_value NUMERIC,
   rating_reviews_count INT,
