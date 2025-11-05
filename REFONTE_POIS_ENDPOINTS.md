@@ -13,7 +13,7 @@ Inspiré d'Airbnb et Google Maps : les markers et la liste affichent les mêmes 
 ### Nouveaux endpoints
 
 #### `GET /v1/pois`
-- **Remplace** : `/v1/poi` (qui reste disponible pour rétrocompatibilité)
+- **Remplace** : `/v1/poi` (⚠️ ancien endpoint supprimé)
 - **Optimisations** :
   - ✅ Pas de cursor pagination (simple LIMIT)
   - ✅ Agrégation des mentions en SQL (pas en JavaScript)
@@ -90,12 +90,12 @@ limit                     : 50 (default, max 80)
 ```
 
 #### `GET /v1/pois/:slug`
-- **Remplace** : `/v1/poi/:slug` (qui reste disponible pour rétrocompatibilité)
-- **Identique** au précédent, juste renommé pour cohérence
+- **Remplace** : `/v1/poi/:slug` (⚠️ ancien endpoint supprimé)
+- Optimisé avec LRU cache et JOIN pour les photos
 
 #### `GET /v1/pois/facets`
-- **Remplace** : `/v1/poi/facets` (qui reste disponible pour rétrocompatibilité)
-- Cache HTTP 10min (vs 5min)
+- **Remplace** : `/v1/poi/facets` (⚠️ ancien endpoint supprimé)
+- Cache HTTP 10min
 
 ### Nouveau RPC PostgreSQL
 
@@ -222,21 +222,18 @@ curl "http://localhost:3000/v1/pois/facets?city=paris&bbox=48.8,2.2,48.9,2.4"
    → Affichage page détail
 ```
 
-## 🧹 Nettoyage futur (optionnel)
+## ✅ Nettoyage effectué
 
-Une fois que le front utilise les nouveaux endpoints `/v1/pois` :
+Les anciens endpoints ont été supprimés :
 
-1. Déprécier les anciens endpoints `/v1/poi`
-2. Ajouter un warning dans les logs
-3. Supprimer après 6 mois de transition
+1. ❌ `routes/v1/poi.js` - Supprimé
+2. ❌ `routes/v1/poi/facets.js` - Supprimé
+3. ✅ Seuls les nouveaux endpoints `/v1/pois` sont disponibles
 
-```javascript
-// Dans routes/v1/poi.js
-fastify.get('/poi', async (request, reply) => {
-  fastify.log.warn('DEPRECATED: /v1/poi is deprecated, use /v1/pois instead');
-  // ... reste du code
-});
-```
+**Migration requise** : Le frontend doit utiliser les nouveaux endpoints :
+- `/v1/pois` au lieu de `/v1/poi`
+- `/v1/pois/:slug` au lieu de `/v1/poi/:slug`
+- `/v1/pois/facets` au lieu de `/v1/poi/facets`
 
 ## 📊 Monitoring
 

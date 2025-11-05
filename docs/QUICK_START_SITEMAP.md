@@ -189,8 +189,7 @@ grep "sitemap" logs/ | grep "duration"
 
 ```bash
 SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_ANON_KEY=eyJxxx...
-SUPABASE_SERVICE_KEY=eyJxxx...
+SUPABASE_SERVICE_ROLE_KEY=eyJxxx...
 PORT=3000
 NODE_ENV=production
 ```

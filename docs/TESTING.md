@@ -40,7 +40,7 @@ curl http://localhost:3000/v1
   "data": {
     "status": "ok",
     "version": "1.0",
-    "endpoints": ["/v1/poi", "/v1/collections", "/v1/home", "/v1/sitemap/pois"],
+    "endpoints": ["/v1/pois", "/v1/collections", "/v1/home", "/v1/sitemap/pois"],
     "uptime": 123
   },
   "timestamp": "..."

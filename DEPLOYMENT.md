@@ -7,8 +7,7 @@ Set these environment variables in your PaaS platform:
 
 ```env
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your_anon_key_here
-SUPABASE_SERVICE_KEY=your_service_key_here
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
 PORT=3100
 NODE_ENV=production
 CORS_ORIGIN=https://yourdomain.com,https://www.yourdomain.com

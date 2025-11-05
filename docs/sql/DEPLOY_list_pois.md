@@ -236,7 +236,7 @@ DROP FUNCTION IF EXISTS list_pois(
 );
 ```
 
-Les anciens endpoints `/v1/poi` continueront de fonctionner avec `list_pois_segment`.
+⚠️ **Note** : Les anciens endpoints `/v1/poi` ont été supprimés. Seuls `/v1/pois` sont disponibles et utilisent `list_pois`.
 
 ## ✅ Checklist de déploiement
 

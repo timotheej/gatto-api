@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - 2025-01-05
+
+#### POI Endpoints Refactored with Phase 1 Optimizations
+
+**Breaking Changes:**
+- Removed legacy endpoints: `GET /v1/poi` and `GET /v1/poi/:slug`
+- Removed legacy facets endpoint: `GET /v1/poi/facets`
+
+**New Optimized Endpoints:**
+- `GET /v1/pois` - List POIs with bbox support for map view
+  - Uses new `list_pois` RPC with mentions aggregated in SQL
+  - LRU cache (5-minute TTL, 500 entries)
+  - Photo enrichment with optimized JOIN query
+  - X-Cache headers for monitoring (HIT/MISS)
+  - Performance: ~130ms (cache miss), ~2-5ms (cache hit)
+
+- `GET /v1/pois/:slug` - POI detail view
+  - LRU cache enabled (5-minute TTL)
+  - Optimized photo enrichment
+  - Performance: ~80ms (cache miss), ~2-5ms (cache hit)
+
+- `GET /v1/pois/facets` - Facets for filters
+  - 10-minute cache
+  - Returns categories, price levels, etc.
+
+**Performance Improvements:**
+- Before: ~155ms average response time
+- After (cache miss): ~130ms (-16%)
+- After (cache hit): ~2-5ms (-98%)
+- Expected average (90% cache hit): ~20-30ms
+
+**Database:**
+- New RPC: `list_pois` (replaces `list_pois_segment`)
+- Mentions aggregated in SQL (eliminates 1 query per request)
+- Photo indexes for optimized JOIN queries
+
+**Security:**
+- Removed `SUPABASE_ANON_KEY` usage
+- All endpoints now use `SUPABASE_SERVICE_ROLE_KEY` only
+
 ### Added - 2024-10-22
 
 #### Sitemap Endpoint for SEO

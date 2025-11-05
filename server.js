@@ -12,8 +12,6 @@ import rateLimitPlugin from "./plugins/rate-limit.js";
 import responsesPlugin from "./utils/responses.js";
 
 import v1Routes from "./routes/v1/index.js";
-import poiRoutes from "./routes/v1/poi.js";
-import poiFacetsRoutes from "./routes/v1/poi/facets.js";
 import poisRoutes from "./routes/v1/pois.js";
 import poisFacetsRoutes from "./routes/v1/pois/facets.js";
 import collectionsRoutes from "./routes/v1/collections.js";
@@ -24,6 +22,10 @@ const fastify = Fastify({
   logger: {
     level: process.env.NODE_ENV === "production" ? "warn" : "info",
   },
+  connectionTimeout: 10000, // 10s connection timeout
+  keepAliveTimeout: 5000,
+  requestTimeout: 30000, // 30s max per request
+  bodyLimit: 1048576, // 1MB max body size
 });
 
 async function build() {
@@ -42,13 +44,74 @@ async function build() {
     await fastify.register(i18nPlugin);
     await fastify.register(responsesPlugin);
 
+    // Global API key authentication
+    fastify.addHook('onRequest', async (request, reply) => {
+      // Public routes whitelist
+      const publicRoutes = ['/health', '/v1', '/'];
+
+      // Allow public routes
+      if (publicRoutes.includes(request.url) || request.url === '/') {
+        return;
+      }
+
+      // Verify API key for all other routes
+      const apiKey = request.headers['x-api-key'];
+      const validKey = process.env.API_KEY_PUBLIC;
+
+      if (!validKey) {
+        fastify.log.error('API_KEY_PUBLIC not configured');
+        return reply.code(500).send({
+          success: false,
+          error: 'Server configuration error',
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      if (!apiKey || apiKey !== validKey) {
+        fastify.log.warn({
+          ip: request.ip,
+          url: request.url,
+          userAgent: request.headers['user-agent']
+        }, 'Unauthorized access attempt');
+
+        return reply.code(401).send({
+          success: false,
+          error: 'Unauthorized - Invalid or missing API key',
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Valid API key, log for security monitoring
+      fastify.log.debug({ url: request.url }, 'Authenticated request');
+    });
+
+    // Security monitoring - log suspicious activity
+    fastify.addHook('onResponse', async (request, reply) => {
+      // Log unauthorized access attempts
+      if (reply.statusCode === 401 || reply.statusCode === 403) {
+        fastify.log.warn({
+          ip: request.ip,
+          url: request.url,
+          userAgent: request.headers['user-agent'],
+          statusCode: reply.statusCode,
+          responseTime: reply.getResponseTime()
+        }, 'Security: Unauthorized access attempt');
+      }
+
+      // Log server errors for investigation
+      if (reply.statusCode >= 500) {
+        fastify.log.error({
+          ip: request.ip,
+          url: request.url,
+          statusCode: reply.statusCode,
+          responseTime: reply.getResponseTime()
+        }, 'Security: Server error occurred');
+      }
+    });
+
     await fastify.register(v1Routes, { prefix: "/v1" });
 
-    // Legacy routes (keep for backward compatibility)
-    await fastify.register(poiRoutes, { prefix: "/v1" });
-    await fastify.register(poiFacetsRoutes);
-
-    // New optimized routes
+    // POI routes
     await fastify.register(poisRoutes, { prefix: "/v1" });
     await fastify.register(poisFacetsRoutes);
 
