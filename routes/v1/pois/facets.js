@@ -109,7 +109,7 @@ export default async function poisFacetsRoutes(fastify) {
         const fresh = parseBoolTriState(validatedQuery.fresh);
 
         const rpcParams = {
-          p_city_slug: null,
+          p_city_slug: validatedQuery.city,
           p_primary_types: primaryTypes ?? null,
           p_subcategories: subcategories ?? null,
           p_district_slugs: districtSlugs ?? null,
