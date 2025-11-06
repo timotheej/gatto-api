@@ -34,6 +34,8 @@ const CsvListSchema = z.string()
 export const PoisQuerySchema = z.object({
   bbox: BboxSchema,
 
+  city: SlugSchema.default('paris'),
+
   primary_type: CsvListSchema.optional(),
 
   subcategory: CsvListSchema.optional(),
