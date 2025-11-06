@@ -34,8 +34,6 @@ const CsvListSchema = z.string()
 export const PoisQuerySchema = z.object({
   bbox: BboxSchema,
 
-  city: SlugSchema.default('paris'),
-
   primary_type: CsvListSchema.optional(),
 
   subcategory: CsvListSchema.optional(),
@@ -94,8 +92,6 @@ export const PoisFacetsQuerySchema = z.object({
     .regex(/^-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*$/)
     .optional(),
 
-  city: SlugSchema.default('paris'),
-
   primary_type: CsvListSchema.optional(),
 
   subcategory: CsvListSchema.optional(),
@@ -125,9 +121,7 @@ export const PoisFacetsQuerySchema = z.object({
   rating_max: z.coerce.number().min(0).max(5).optional(),
 
   sort: z.enum(['gatto', 'price_desc', 'price_asc', 'mentions', 'rating'])
-    .default('gatto'),
-
-  lang: z.enum(['fr', 'en']).default('fr')
+    .default('gatto')
 }).strict();
 
 /**
