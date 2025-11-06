@@ -13,7 +13,7 @@
 
 CREATE OR REPLACE FUNCTION list_pois(
   p_bbox FLOAT[],                       -- [lat_min, lng_min, lat_max, lng_max] (required)
-  p_city_slug TEXT DEFAULT 'paris',
+  p_city_slug TEXT DEFAULT NULL,
   p_primary_types TEXT[] DEFAULT NULL,
   p_subcategories TEXT[] DEFAULT NULL,
   p_neighbourhood_slugs TEXT[] DEFAULT NULL,
@@ -232,7 +232,7 @@ BEGIN
     FROM base b
     CROSS JOIN norm n
     WHERE
-      b.city_slug = n.city_slug
+      (n.city_slug IS NULL OR b.city_slug = n.city_slug)
       -- Spatial filtering FIRST (optimization)
       AND b.lat IS NOT NULL AND b.lng IS NOT NULL
       AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
