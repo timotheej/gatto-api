@@ -124,8 +124,7 @@ export default async function poisFacetsRoutes(fastify) {
           p_bbox: bbox ?? null,
           p_awarded: awarded, // null/true/false
           p_fresh: fresh, // null/true/false
-          p_sort: validatedQuery.sort,
-          p_lang: 'fr',
+          p_sort: validatedQuery.sort
         };
 
         // Appel RPC
