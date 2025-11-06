@@ -226,7 +226,6 @@ export default async function poisRoutes(fastify) {
 
       const {
         bbox,
-        city,
         primary_type,
         subcategory,
         neighbourhood_slug,
@@ -258,7 +257,6 @@ export default async function poisRoutes(fastify) {
       // Check cache
       const cacheKey = getCacheKey('pois', {
         bbox: bboxArray.join(','),
-        city,
         primary_type,
         subcategory,
         neighbourhood_slug,
@@ -323,7 +321,7 @@ export default async function poisRoutes(fastify) {
       // Call new optimized RPC
       const { data: rows, error } = await fastify.supabase.rpc('list_pois', {
         p_bbox: bboxArray,
-        p_city_slug: city,
+        p_city_slug: null,
         p_primary_types: primaryTypes,
         p_subcategories: subcategories,
         p_neighbourhood_slugs: neighbourhoodSlugs,
