@@ -92,6 +92,8 @@ export const PoisFacetsQuerySchema = z.object({
     .regex(/^-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*,-?\d+\.?\d*$/)
     .optional(),
 
+  city: SlugSchema.default('paris'),
+
   primary_type: CsvListSchema.optional(),
 
   subcategory: CsvListSchema.optional(),
