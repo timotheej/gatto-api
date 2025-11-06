@@ -1,4 +1,7 @@
-import { z } from "zod";
+import {
+  PoisFacetsQuerySchema,
+  formatZodErrors
+} from '../../../utils/validation.js';
 
 // Utility functions for parameter parsing
 function parseCsvToArray(str, { lowercase = false } = {}) {
@@ -13,11 +16,6 @@ function parseCsvToArray(str, { lowercase = false } = {}) {
 
 function uniq(arr) {
   return Array.isArray(arr) ? [...new Set(arr)] : null;
-}
-
-function parseSingleFromCsv(str, { lowercase = false } = {}) {
-  const arr = parseCsvToArray(str, { lowercase });
-  return arr?.[0] ?? null;
 }
 
 function parseBoolTriState(v) {
@@ -59,30 +57,6 @@ function parseRatingBound(value) {
   return parsed;
 }
 
-// Validation schema
-const QuerySchema = z
-  .object({
-    city: z.string().default("paris"),
-    district_slug: z.string().optional(),
-    neighbourhood_slug: z.string().optional(),
-    primary_type: z.string().optional(),
-    subcategory: z.string().optional(),
-    price: z.string().optional(),
-    awarded: z.string().optional(),
-    fresh: z.string().optional(),
-    awards: z.string().optional(),
-    tags: z.string().optional(),
-    tags_any: z.string().optional(),
-    sort: z.string().optional(),
-    price_min: z.string().optional(),
-    price_max: z.string().optional(),
-    rating_min: z.string().optional(),
-    rating_max: z.string().optional(),
-    lang: z.string().optional(),
-    bbox: z.string().optional(), // Format: "lat_min,lng_min,lat_max,lng_max"
-  })
-  .strict();
-
 /**
  * Facettes contextuelles pour les POI (ville/arrondissement/quartier + filtres).
  */
@@ -97,79 +71,64 @@ export default async function poisFacetsRoutes(fastify) {
       },
     },
     async (request, reply) => {
-      // 1) Parse & validate
-      const parsed = QuerySchema.safeParse(request.query);
-      if (!parsed.success) {
-        return reply.code(400).send({ success: false, error: "Invalid query" });
-      }
-
-      const q = request.query || {};
-
-      const primaryTypes = uniq(
-        parseCsvToArray(q.primary_type, { lowercase: true })
-      );
-      const subcategories = uniq(
-        parseCsvToArray(q.subcategory, { lowercase: true })
-      );
-      const tagsAll = uniq(parseCsvToArray(q.tags, { lowercase: true }));
-      const tagsAny = uniq(parseCsvToArray(q.tags_any, { lowercase: true }));
-      const awardsProviders = uniq(
-        parseCsvToArray(q.awards, { lowercase: true })
-      );
-      const districtSlugs = uniq(
-        parseCsvToArray(q.district_slug, { lowercase: true })
-      );
-      const neighbourhoodSlugs = uniq(
-        parseCsvToArray(q.neighbourhood_slug, { lowercase: true })
-      );
-      const bbox = parseBbox(q.bbox);
-      let priceMin = parsePriceBound(q.price_min);
-      let priceMax = parsePriceBound(q.price_max);
-      const ratingMin = parseRatingBound(q.rating_min);
-      const ratingMax = parseRatingBound(q.rating_max);
-
-      // Compat: legacy single price maps to exact range
-      const legacyPrice = parsePriceBound(q.price);
-      if (legacyPrice !== null) {
-        priceMin = priceMin ?? legacyPrice;
-        priceMax = priceMax ?? legacyPrice;
-      }
-
-      const awarded = parseBoolTriState(q.awarded);
-      const fresh = parseBoolTriState(q.fresh);
-
-      // Sort validation
-      const allowedSort = new Set([
-        "gatto",
-        "rating",
-        "mentions",
-        "price_asc",
-        "price_desc",
-      ]);
-      const sort = allowedSort.has(q.sort) ? q.sort : "gatto";
-
-      const rpcParams = {
-        p_city_slug: q.city || "paris",
-        p_primary_types: primaryTypes ?? null,
-        p_subcategories: subcategories ?? null,
-        p_district_slugs: districtSlugs ?? null,
-        p_neighbourhood_slugs: neighbourhoodSlugs ?? null,
-        p_tags_all: tagsAll ?? null,
-        p_tags_any: tagsAny ?? null,
-        p_awards_providers: awardsProviders ?? null,
-        p_price_min: priceMin ?? null,
-        p_price_max: priceMax ?? null,
-        p_rating_min: ratingMin ?? null,
-        p_rating_max: ratingMax ?? null,
-        p_bbox: bbox ?? null,
-        p_awarded: awarded, // null/true/false
-        p_fresh: fresh, // null/true/false
-        p_sort: sort,
-        p_lang: q.lang === "fr" || q.lang === "en" ? q.lang : "fr",
-      };
-
-      // Appel RPC
       try {
+        // 1) Validate query parameters with Zod
+        const validatedQuery = PoisFacetsQuerySchema.parse(request.query);
+
+        const primaryTypes = uniq(
+          parseCsvToArray(validatedQuery.primary_type, { lowercase: true })
+        );
+        const subcategories = uniq(
+          parseCsvToArray(validatedQuery.subcategory, { lowercase: true })
+        );
+        const tagsAll = uniq(parseCsvToArray(validatedQuery.tags, { lowercase: true }));
+        const tagsAny = uniq(parseCsvToArray(validatedQuery.tags_any, { lowercase: true }));
+        const awardsProviders = uniq(
+          parseCsvToArray(validatedQuery.awards, { lowercase: true })
+        );
+        const districtSlugs = uniq(
+          parseCsvToArray(validatedQuery.district_slug, { lowercase: true })
+        );
+        const neighbourhoodSlugs = uniq(
+          parseCsvToArray(validatedQuery.neighbourhood_slug, { lowercase: true })
+        );
+        const bbox = parseBbox(validatedQuery.bbox);
+        let priceMin = parsePriceBound(validatedQuery.price_min);
+        let priceMax = parsePriceBound(validatedQuery.price_max);
+        const ratingMin = parseRatingBound(validatedQuery.rating_min);
+        const ratingMax = parseRatingBound(validatedQuery.rating_max);
+
+        // Compat: legacy single price maps to exact range
+        const legacyPrice = parsePriceBound(validatedQuery.price);
+        if (legacyPrice !== null) {
+          priceMin = priceMin ?? legacyPrice;
+          priceMax = priceMax ?? legacyPrice;
+        }
+
+        const awarded = parseBoolTriState(validatedQuery.awarded);
+        const fresh = parseBoolTriState(validatedQuery.fresh);
+
+        const rpcParams = {
+          p_city_slug: validatedQuery.city,
+          p_primary_types: primaryTypes ?? null,
+          p_subcategories: subcategories ?? null,
+          p_district_slugs: districtSlugs ?? null,
+          p_neighbourhood_slugs: neighbourhoodSlugs ?? null,
+          p_tags_all: tagsAll ?? null,
+          p_tags_any: tagsAny ?? null,
+          p_awards_providers: awardsProviders ?? null,
+          p_price_min: priceMin ?? null,
+          p_price_max: priceMax ?? null,
+          p_rating_min: ratingMin ?? null,
+          p_rating_max: ratingMax ?? null,
+          p_bbox: bbox ?? null,
+          p_awarded: awarded, // null/true/false
+          p_fresh: fresh, // null/true/false
+          p_sort: validatedQuery.sort,
+          p_lang: validatedQuery.lang,
+        };
+
+        // Appel RPC
         const { data, error } = await fastify.supabase.rpc(
           "rpc_get_pois_facets",
           rpcParams
@@ -181,7 +140,11 @@ export default async function poisFacetsRoutes(fastify) {
           );
           return reply
             .code(500)
-            .send({ success: false, error: "Failed to compute facets" });
+            .send({
+              success: false,
+              error: "Failed to compute facets",
+              timestamp: new Date().toISOString()
+            });
         }
 
         // La RPC renvoie déjà le format JSON correct { context, facets }
@@ -189,15 +152,30 @@ export default async function poisFacetsRoutes(fastify) {
 
         // Réponse HTTP (cache 10min, aligné sur /v1/pois)
         reply.header("Cache-Control", "public, max-age=600");
-        return reply.send({ success: true, data: payload });
-      } catch (e) {
-        request.log.error(
-          { rpc: "rpc_get_pois_facets", e, rpcParams },
-          "Exception in RPC facets"
-        );
-        return reply
-          .code(500)
-          .send({ success: false, error: "Failed to compute facets" });
+        return reply.send({
+          success: true,
+          data: payload,
+          timestamp: new Date().toISOString()
+        });
+
+      } catch (err) {
+        // Handle Zod validation errors
+        if (err.name === 'ZodError') {
+          return reply.code(400).send({
+            success: false,
+            error: 'Invalid query parameters',
+            details: formatZodErrors(err),
+            timestamp: new Date().toISOString()
+          });
+        }
+
+        // Handle other errors
+        request.log.error('GET /v1/pois/facets error:', err);
+        return reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+          timestamp: new Date().toISOString()
+        });
       }
     }
   );
