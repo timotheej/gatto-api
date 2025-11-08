@@ -67,7 +67,9 @@ export const PoisQuerySchema = z.object({
   sort: z.enum(['gatto', 'price_desc', 'price_asc', 'mentions', 'rating'])
     .default('gatto'),
 
-  limit: z.coerce.number().int().min(1).max(80).default(50),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+
+  page: z.coerce.number().int().min(1).default(1),
 
   lang: z.enum(['fr', 'en']).default('fr')
 }).strict(); // Reject unknown parameters

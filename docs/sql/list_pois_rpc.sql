@@ -28,7 +28,8 @@ CREATE OR REPLACE FUNCTION list_pois(
   p_awarded BOOLEAN DEFAULT NULL,
   p_fresh BOOLEAN DEFAULT NULL,
   p_sort TEXT DEFAULT 'gatto',          -- gatto|rating|mentions|price_asc|price_desc
-  p_limit INT DEFAULT 50                -- max 80
+  p_limit INT DEFAULT 20,               -- max 50 (reduced from 80)
+  p_page INT DEFAULT 1                  -- page number (starts at 1)
 )
 RETURNS TABLE(
   id UUID,
@@ -72,12 +73,16 @@ RETURNS TABLE(
   rating_reviews_count INT,
   -- Mentions
   mentions_count INT,
-  mentions_sample JSONB
+  mentions_sample JSONB,
+  -- Pagination
+  total_count BIGINT
 ) AS $$
 DECLARE
   v_city_slug TEXT := p_city_slug;
   v_sort TEXT := COALESCE(p_sort, 'gatto');
-  v_limit INT := LEAST(GREATEST(p_limit, 1), 80);
+  v_limit INT := LEAST(GREATEST(p_limit, 1), 50);  -- max 50 items per page
+  v_page INT := GREATEST(p_page, 1);               -- ensure page >= 1
+  v_offset INT := (v_page - 1) * v_limit;          -- calculate offset
 BEGIN
   -- Validate bbox
   IF p_bbox IS NULL OR array_length(p_bbox, 1) != 4 THEN
@@ -269,10 +274,11 @@ BEGIN
                           OR   (p_fresh   = FALSE AND COALESCE(b.freshness_bonus,0) = 0))
   ),
 
-  -- 6) Tri stable (same as list_pois_segment)
+  -- 6) Tri stable avec COUNT(*) OVER() pour pagination
   sorted AS (
     SELECT
       f.*,
+      COUNT(*) OVER() AS total_count_window,  -- total results WITHOUT LIMIT/OFFSET
       CASE v_sort
         WHEN 'price_desc' THEN COALESCE(
           CASE f.price_level
@@ -296,7 +302,7 @@ BEGIN
     ORDER BY sort_key DESC NULLS LAST, f.id ASC
   )
 
-  -- 7) Return results (no cursor pagination)
+  -- 7) Return results with pagination (LIMIT + OFFSET)
   SELECT
     s.id,
     s.google_place_id::text,
@@ -342,9 +348,11 @@ BEGIN
     s.rating_value,
     s.rating_reviews_count,
     s.mentions_count,
-    s.mentions_sample
+    s.mentions_sample,
+    s.total_count_window::bigint AS total_count
   FROM sorted s
-  LIMIT v_limit;
+  LIMIT v_limit
+  OFFSET v_offset;
 END;
 $$ LANGUAGE plpgsql STABLE;
 

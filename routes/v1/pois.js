@@ -242,7 +242,8 @@ export default async function poisRoutes(fastify) {
         rating_min,
         rating_max,
         sort,
-        limit
+        limit,
+        page
       } = validatedQuery;
 
       // Validate bbox (required)
@@ -274,7 +275,8 @@ export default async function poisRoutes(fastify) {
         rating_min,
         rating_max,
         sort,
-        limit
+        limit,
+        page
       });
 
       const cached = poisCache.get(cacheKey);
@@ -287,9 +289,7 @@ export default async function poisRoutes(fastify) {
 
       fastify.log.info({ cacheKey, endpoint: '/v1/pois' }, 'Cache MISS');
 
-      // Parse parameters
-      const maxLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 80);
-
+      // Parse parameters (limit and page are already validated by Zod)
       const primaryTypes = toArr(primary_type);
       const subcategories = toArr(subcategory);
       const districtSlugs = toArr(district_slug);
@@ -320,7 +320,7 @@ export default async function poisRoutes(fastify) {
         [ratingMinBound, ratingMaxBound] = [ratingMaxBound, ratingMinBound];
       }
 
-      // Call new optimized RPC
+      // Call optimized RPC with pagination
       const { data: rows, error } = await fastify.supabase.rpc('list_pois', {
         p_bbox: bboxArray,
         p_city_slug: city,
@@ -338,7 +338,8 @@ export default async function poisRoutes(fastify) {
         p_awarded: isAwarded,
         p_fresh: isFresh,
         p_sort: sort,
-        p_limit: maxLimit
+        p_limit: limit,
+        p_page: page
       });
 
       if (error) {
@@ -351,6 +352,10 @@ export default async function poisRoutes(fastify) {
       }
 
       const pois = rows || [];
+
+      // Extract total_count from first row (all rows have the same value)
+      const totalCount = pois.length > 0 ? Number(pois[0].total_count) : 0;
+
       const poiIds = pois.map(p => p.id);
 
       // Enrich with photos (card variants only)
@@ -423,12 +428,24 @@ export default async function poisRoutes(fastify) {
         };
       });
 
-      // Build response
+      // Calculate pagination metadata
+      const totalPages = Math.ceil(totalCount / limit);
+      const hasNext = page < totalPages;
+      const hasPrev = page > 1;
+
+      // Build response with pagination
       const response = {
         success: true,
         data: {
-          pois: items,
-          total: items.length
+          items,
+          pagination: {
+            total: totalCount,
+            per_page: limit,
+            current_page: page,
+            total_pages: totalPages,
+            has_next: hasNext,
+            has_prev: hasPrev
+          }
         },
         timestamp: new Date().toISOString()
       };
