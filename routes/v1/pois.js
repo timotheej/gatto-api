@@ -246,20 +246,16 @@ export default async function poisRoutes(fastify) {
         page
       } = validatedQuery;
 
-      // Validate bbox (required)
-      const bboxArray = parseBbox(bbox);
-      if (!bboxArray) {
-        return reply.code(400).send({
-          success: false,
-          error: 'bbox is required and must be in format: lat_min,lng_min,lat_max,lng_max',
-          timestamp: new Date().toISOString()
-        });
-      }
+      // Parse bbox if provided (optional)
+      const bboxArray = bbox ? parseBbox(bbox) : null;
 
-      // Check cache
+      // Priority logic: if bbox provided, ignore city for RPC (but keep for cache key)
+      const cityParam = bboxArray ? null : city;
+
+      // Check cache (include both bbox and city in key)
       const cacheKey = getCacheKey('pois', {
-        bbox: bboxArray.join(','),
-        city,
+        bbox: bboxArray ? bboxArray.join(',') : undefined,
+        city: city || undefined,
         primary_type,
         subcategory,
         neighbourhood_slug,
@@ -321,9 +317,10 @@ export default async function poisRoutes(fastify) {
       }
 
       // Call optimized RPC with pagination
+      // Priority: bbox overrides city (cityParam is null if bbox provided)
       const { data: rows, error } = await fastify.supabase.rpc('list_pois', {
         p_bbox: bboxArray,
-        p_city_slug: city,
+        p_city_slug: cityParam,
         p_primary_types: primaryTypes,
         p_subcategories: subcategories,
         p_neighbourhood_slugs: neighbourhoodSlugs,

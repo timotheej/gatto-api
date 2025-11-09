@@ -32,9 +32,9 @@ const CsvListSchema = z.string()
  * Schema for GET /v1/pois query parameters
  */
 export const PoisQuerySchema = z.object({
-  bbox: BboxSchema,
+  bbox: BboxSchema.optional(),
 
-  city: SlugSchema.default('paris'),
+  city: SlugSchema.optional(),
 
   primary_type: CsvListSchema.optional(),
 
@@ -72,7 +72,14 @@ export const PoisQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
 
   lang: z.enum(['fr', 'en']).default('fr')
-}).strict(); // Reject unknown parameters
+}).strict()
+  .refine(
+    (data) => data.bbox || data.city,
+    {
+      message: "Either 'bbox' or 'city' parameter must be provided",
+      path: ['bbox']
+    }
+  );
 
 /**
  * Schema for GET /v1/pois/:slug path parameters
@@ -165,7 +172,7 @@ export const CollectionDetailQuerySchema = z.object({
  * Helper function to format Zod errors for API responses
  */
 export function formatZodErrors(zodError) {
-  return zodError.errors.map(err => ({
+  return zodError.issues.map(err => ({
     field: err.path.join('.'),
     message: err.message,
     code: err.code
