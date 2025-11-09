@@ -131,6 +131,37 @@ export const PoisFacetsQuerySchema = z.object({
 }).strict();
 
 /**
+ * Schema for GET /v1/collections query parameters
+ */
+export const CollectionsQuerySchema = z.object({
+  city: SlugSchema,
+
+  lang: z.enum(['fr', 'en']).default('fr'),
+
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+
+  page: z.coerce.number().int().min(1).default(1)
+}).strict();
+
+/**
+ * Schema for GET /v1/collections/:slug path parameters
+ */
+export const CollectionDetailParamsSchema = z.object({
+  slug: SlugSchema
+}).strict();
+
+/**
+ * Schema for GET /v1/collections/:slug query parameters
+ */
+export const CollectionDetailQuerySchema = z.object({
+  lang: z.enum(['fr', 'en']).default('fr'),
+
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+
+  page: z.coerce.number().int().min(1).default(1)
+}).strict();
+
+/**
  * Helper function to format Zod errors for API responses
  */
 export function formatZodErrors(zodError) {
