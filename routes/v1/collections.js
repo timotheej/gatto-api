@@ -182,10 +182,18 @@ async function enrichWithPhotos(fastify, poiIds, variantKeys = ['card_sq']) {
 }
 
 // Enriches cover photos with variants for collections
-async function enrichCoverPhotos(fastify, photoIds) {
+async function enrichCoverPhotos(fastify, photoIds, variantKeys = ['card_sq']) {
   if (!photoIds.length) return { variants: {} };
 
-  const allVariantKeys = ['card_sq@1x', 'card_sq@2x'];
+  // Build variant keys with all density variants
+  const allVariantKeys = [];
+  variantKeys.forEach(key => {
+    if (!key.includes('@')) {
+      allVariantKeys.push(`${key}@1x`, `${key}@2x`);
+    } else {
+      allVariantKeys.push(key);
+    }
+  });
 
   const { data: photosWithVariants } = await fastify.supabase
     .from('poi_photos')
@@ -287,8 +295,8 @@ export default async function collectionsRoutes(fastify) {
         .map(c => c.cover_photo_id)
         .filter(Boolean);
 
-      // Enrich with photo variants
-      const photosData = await enrichCoverPhotos(fastify, photoIds);
+      // Enrich with photo variants (card_sq and card_tall)
+      const photosData = await enrichCoverPhotos(fastify, photoIds, ['card_sq', 'card_tall']);
 
       // Build response items
       const items = collections.map(collection => {
@@ -305,12 +313,21 @@ export default async function collectionsRoutes(fastify) {
             blurhash: collection.cover_photo_blurhash
           };
 
-          const block = photoBlockFrom(photosData.variants, photo, 'card_sq');
-          if (block) {
+          const cardSqBlock = photoBlockFrom(photosData.variants, photo, 'card_sq');
+          const cardTallBlock = photoBlockFrom(photosData.variants, photo, 'card_tall');
+
+          if (cardSqBlock || cardTallBlock) {
             coverPhoto = {
-              variants: block.variants,
-              dominant_color: block.dominant_color,
-              blurhash: block.blurhash
+              card_sq: cardSqBlock ? {
+                variants: cardSqBlock.variants,
+                dominant_color: cardSqBlock.dominant_color,
+                blurhash: cardSqBlock.blurhash
+              } : null,
+              card_tall: cardTallBlock ? {
+                variants: cardTallBlock.variants,
+                dominant_color: cardTallBlock.dominant_color,
+                blurhash: cardTallBlock.blurhash
+              } : null
             };
           }
         }
@@ -458,14 +475,29 @@ export default async function collectionsRoutes(fastify) {
           blurhash: firstRow.collection_cover_photo_blurhash
         };
 
-        // Enrich cover photo with variants
-        const photosData = await enrichCoverPhotos(fastify, [firstRow.collection_cover_photo_id]);
-        const block = photoBlockFrom(photosData.variants, photo, 'card_sq');
-        if (block) {
+        // Enrich cover photo with variants (card_sq, card_tall, cover)
+        const photosData = await enrichCoverPhotos(fastify, [firstRow.collection_cover_photo_id], ['card_sq', 'card_tall', 'cover']);
+        const cardSqBlock = photoBlockFrom(photosData.variants, photo, 'card_sq');
+        const cardTallBlock = photoBlockFrom(photosData.variants, photo, 'card_tall');
+        const coverBlock = photoBlockFrom(photosData.variants, photo, 'cover');
+
+        if (cardSqBlock || cardTallBlock || coverBlock) {
           collectionCoverPhoto = {
-            variants: block.variants,
-            dominant_color: block.dominant_color,
-            blurhash: block.blurhash
+            card_sq: cardSqBlock ? {
+              variants: cardSqBlock.variants,
+              dominant_color: cardSqBlock.dominant_color,
+              blurhash: cardSqBlock.blurhash
+            } : null,
+            card_tall: cardTallBlock ? {
+              variants: cardTallBlock.variants,
+              dominant_color: cardTallBlock.dominant_color,
+              blurhash: cardTallBlock.blurhash
+            } : null,
+            cover: coverBlock ? {
+              variants: coverBlock.variants,
+              dominant_color: coverBlock.dominant_color,
+              blurhash: coverBlock.blurhash
+            } : null
           };
         }
       }
