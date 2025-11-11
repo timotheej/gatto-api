@@ -116,10 +116,10 @@ BEGIN
         lower(p.district_slug)      AS district_slug_lc,
         lower(p.neighbourhood_slug) AS neighbourhood_slug_lc,
 
-        /* awards providers extraits des tags */
+        /* awards providers extraits de la colonne awards */
         COALESCE((
           SELECT array_agg(DISTINCT lower(aw->>'provider'))
-          FROM jsonb_array_elements(COALESCE(p.tags->'badges'->'awards','[]'::jsonb)) aw
+          FROM jsonb_array_elements(COALESCE(p.awards,'[]'::jsonb)) aw
           WHERE aw ? 'provider'
         ), '{}'::text[]) AS awards_providers,
 

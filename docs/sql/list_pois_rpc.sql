@@ -1,19 +1,25 @@
 -- ==================================================
--- RPC: list_pois
+-- RPC: list_pois (UPDATED)
 -- ==================================================
 -- Optimized RPC for map + list view
 -- Returns POIs with all necessary data in a single query
 -- including scores, ratings, and mentions aggregation
 --
--- Based on list_pois_segment but simplified:
--- - No cursor pagination (simple LIMIT)
--- - Mentions aggregation done in SQL (not JavaScript)
--- - Optimized for map bbox queries
+-- CHANGES:
+-- - bbox is now OPTIONAL (was required)
+-- - city_slug is now OPTIONAL (no default)
+-- - At least ONE of bbox or city_slug must be provided
+-- - Priority logic: if bbox provided, it overrides city_slug
 -- ==================================================
 
+DROP FUNCTION IF EXISTS list_pois(
+  FLOAT[], TEXT, TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[],
+  INT, INT, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN, TEXT, INT, INT
+);
+
 CREATE OR REPLACE FUNCTION list_pois(
-  p_bbox FLOAT[],                       -- [lat_min, lng_min, lat_max, lng_max] (required)
-  p_city_slug TEXT DEFAULT 'paris',
+  p_bbox FLOAT[] DEFAULT NULL,          -- [lat_min, lng_min, lat_max, lng_max] (optional)
+  p_city_slug TEXT DEFAULT NULL,        -- city slug (optional)
   p_primary_types TEXT[] DEFAULT NULL,
   p_subcategories TEXT[] DEFAULT NULL,
   p_neighbourhood_slugs TEXT[] DEFAULT NULL,
@@ -28,7 +34,7 @@ CREATE OR REPLACE FUNCTION list_pois(
   p_awarded BOOLEAN DEFAULT NULL,
   p_fresh BOOLEAN DEFAULT NULL,
   p_sort TEXT DEFAULT 'gatto',          -- gatto|rating|mentions|price_asc|price_desc
-  p_limit INT DEFAULT 20,               -- max 50 (reduced from 80)
+  p_limit INT DEFAULT 20,               -- max 50
   p_page INT DEFAULT 1                  -- page number (starts at 1)
 )
 RETURNS TABLE(
@@ -84,23 +90,29 @@ DECLARE
   v_page INT := GREATEST(p_page, 1);               -- ensure page >= 1
   v_offset INT := (v_page - 1) * v_limit;          -- calculate offset
 BEGIN
-  -- Validate bbox
-  IF p_bbox IS NULL OR array_length(p_bbox, 1) != 4 THEN
-    RAISE EXCEPTION 'bbox is required and must have 4 coordinates: [lat_min, lng_min, lat_max, lng_max]';
+  -- Validate: at least one of bbox or city_slug must be provided
+  IF p_bbox IS NULL AND p_city_slug IS NULL THEN
+    RAISE EXCEPTION 'Either bbox or city_slug must be provided';
   END IF;
 
-  -- Validate bbox bounds
-  IF p_bbox[1] < -90 OR p_bbox[3] > 90 OR p_bbox[2] < -180 OR p_bbox[4] > 180 THEN
-    RAISE EXCEPTION 'bbox coordinates out of bounds';
-  END IF;
+  -- Validate bbox if provided
+  IF p_bbox IS NOT NULL THEN
+    IF array_length(p_bbox, 1) != 4 THEN
+      RAISE EXCEPTION 'bbox must have 4 coordinates: [lat_min, lng_min, lat_max, lng_max]';
+    END IF;
 
-  IF p_bbox[1] >= p_bbox[3] OR p_bbox[2] >= p_bbox[4] THEN
-    RAISE EXCEPTION 'bbox min must be less than max';
+    IF p_bbox[1] < -90 OR p_bbox[3] > 90 OR p_bbox[2] < -180 OR p_bbox[4] > 180 THEN
+      RAISE EXCEPTION 'bbox coordinates out of bounds';
+    END IF;
+
+    IF p_bbox[1] >= p_bbox[3] OR p_bbox[2] >= p_bbox[4] THEN
+      RAISE EXCEPTION 'bbox min must be less than max';
+    END IF;
   END IF;
 
   RETURN QUERY
   WITH
-  -- 1) Normalisation paramètres (same as list_pois_segment)
+  -- 1) Normalisation paramètres
   norm AS (
     SELECT
       v_city_slug AS city_slug,
@@ -143,7 +155,7 @@ BEGIN
       lgr.reviews_count   AS rt_reviews_count
     FROM public.latest_google_rating lgr
   ),
-  -- 3) Mentions avec aggregation en SQL (optimisation principale)
+  -- 3) Mentions avec aggregation en SQL
   mentions AS (
     SELECT
       poi_id,
@@ -208,10 +220,10 @@ BEGIN
       public.tags_to_text_arr_deep(p.tags) AS tags_flat,
       lower(p.district_slug)      AS district_slug_lc,
       lower(p.neighbourhood_slug) AS neighbourhood_slug_lc,
-      -- awards providers à partir des tags
+      -- awards providers à partir de la colonne awards
       COALESCE((
         SELECT array_agg(DISTINCT lower(aw->>'provider'))
-        FROM jsonb_array_elements(COALESCE(p.tags->'badges'->'awards','[]'::jsonb)) aw
+        FROM jsonb_array_elements(COALESCE(p.awards,'[]'::jsonb)) aw
         WHERE aw ? 'provider'
       ), '{}'::text[]) AS awards_providers,
       -- métriques
@@ -231,17 +243,22 @@ BEGIN
     WHERE p.publishable_status = 'eligible'
   ),
 
-  -- 5) Filtres (same as list_pois_segment but bbox is always applied)
+  -- 5) Filtres (bbox prioritaire, sinon city)
   filtered AS (
     SELECT b.*
     FROM base b
     CROSS JOIN norm n
     WHERE
-      b.city_slug = n.city_slug
-      -- Spatial filtering FIRST (optimization)
-      AND b.lat IS NOT NULL AND b.lng IS NOT NULL
-      AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
-      AND b.lng BETWEEN n.bbox_valid[2] AND n.bbox_valid[4]
+      -- Priority logic: if bbox provided, filter by bbox; otherwise filter by city
+      (
+        (n.bbox_valid IS NOT NULL AND (
+          b.lat IS NOT NULL AND b.lng IS NOT NULL
+          AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
+          AND b.lng BETWEEN n.bbox_valid[2] AND n.bbox_valid[4]
+        ))
+        OR
+        (n.bbox_valid IS NULL AND b.city_slug = n.city_slug)
+      )
       -- Other filters
       AND (n.primary_types_lc IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
       AND (n.subcategories_lc IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
@@ -278,7 +295,7 @@ BEGIN
   sorted AS (
     SELECT
       f.*,
-      COUNT(*) OVER() AS total_count_window,  -- total results WITHOUT LIMIT/OFFSET
+      COUNT(*) OVER() AS total_count_window,
       CASE v_sort
         WHEN 'price_desc' THEN COALESCE(
           CASE f.price_level
@@ -302,7 +319,7 @@ BEGIN
     ORDER BY sort_key DESC NULLS LAST, f.id ASC
   )
 
-  -- 7) Return results with pagination (LIMIT + OFFSET)
+  -- 7) Return results with pagination
   SELECT
     s.id,
     s.google_place_id::text,
@@ -357,50 +374,32 @@ END;
 $$ LANGUAGE plpgsql STABLE;
 
 -- ==================================================
--- Indexes for optimal performance
+-- Index for city-based queries (optimization)
 -- ==================================================
 
--- Spatial index for bbox filtering (if not exists)
-CREATE INDEX IF NOT EXISTS poi_lat_lng_idx
-ON poi (lat, lng);
-
--- Composite index for common query patterns
-CREATE INDEX IF NOT EXISTS poi_map_query_idx
-ON poi (publishable_status, city_slug, lat, lng)
+CREATE INDEX IF NOT EXISTS poi_city_score_idx
+ON poi (city_slug, publishable_status)
 WHERE publishable_status = 'eligible';
 
--- Index for primary_type filtering
-CREATE INDEX IF NOT EXISTS poi_primary_type_idx
-ON poi (primary_type);
-
--- GIN index for tags array filtering
-CREATE INDEX IF NOT EXISTS poi_tags_idx
-ON poi USING GIN (tags);
-
--- GIN index for subcategories array filtering
-CREATE INDEX IF NOT EXISTS poi_subcategories_idx
-ON poi USING GIN (subcategories);
-
--- Index for neighbourhood filtering
-CREATE INDEX IF NOT EXISTS poi_neighbourhood_slug_idx
-ON poi (neighbourhood_slug);
-
--- Index for district filtering
-CREATE INDEX IF NOT EXISTS poi_district_slug_idx
-ON poi (district_slug);
-
--- Index for price filtering (on TEXT column, not numeric)
-CREATE INDEX IF NOT EXISTS poi_price_level_idx
-ON poi (price_level);
-
 -- ==================================================
--- Usage example
+-- Usage examples
 -- ==================================================
 
--- Get 50 restaurants in Paris within a bbox
+-- With bbox only (map view)
 -- SELECT * FROM list_pois(
---   p_bbox := ARRAY[48.8, 2.2, 48.9, 2.4],
+--   p_bbox := ARRAY[48.85, 2.32, 48.87, 2.36],
+--   p_limit := 20
+-- );
+
+-- With city only (list view)
+-- SELECT * FROM list_pois(
 --   p_city_slug := 'paris',
---   p_primary_types := ARRAY['restaurant'],
---   p_limit := 50
+--   p_limit := 20
+-- );
+
+-- With both (bbox takes priority)
+-- SELECT * FROM list_pois(
+--   p_bbox := ARRAY[48.85, 2.32, 48.87, 2.36],
+--   p_city_slug := 'paris',
+--   p_limit := 20
 -- );

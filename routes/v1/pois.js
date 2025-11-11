@@ -598,17 +598,21 @@ export default async function poisRoutes(fastify) {
         published_at: m.published_at_guess
       }));
 
-      // Build breadcrumb
-      const breadcrumb = [
-        { label: lang === 'fr' ? 'Accueil' : 'Home', href: '/' },
-        { label: lang === 'fr' ? poi.city : poi.city, href: `/${poi.city_slug}` }
-      ];
-
-      if (poi.district_slug) {
-        breadcrumb.push({
-          label: poi.district_slug,
-          href: `/${poi.city_slug}/${poi.district_slug}`
-        });
+      // Parse awards from JSONB column
+      let awards = [];
+      if (poi.awards) {
+        try {
+          awards = typeof poi.awards === 'string'
+            ? JSON.parse(poi.awards)
+            : poi.awards;
+          // Ensure it's an array
+          if (!Array.isArray(awards)) {
+            awards = [];
+          }
+        } catch (e) {
+          fastify.log.error('Failed to parse awards:', e);
+          awards = [];
+        }
       }
 
       // Build response
@@ -624,6 +628,7 @@ export default async function poisRoutes(fastify) {
         price_level: poi.price_level,
         tags_keys: poi.tags,
         tags: enrichedTags || [],
+        awards,
         summary: pickLang(poi, lang, 'ai_summary'),
         opening_hours: poi.opening_hours,
         google_place_id: poi.google_place_id,
@@ -646,8 +651,7 @@ export default async function poisRoutes(fastify) {
           reviews_count: rating?.reviews_count || 0
         },
         mentions_count: mentionsSample.length,
-        mentions_sample: mentionsSample,
-        breadcrumb
+        mentions_sample: mentionsSample
       };
 
       // Build final response
