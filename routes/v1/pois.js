@@ -42,6 +42,86 @@ function shouldUseDefaultFavicon(domain) {
   return FAVICON_BRAND_KEYWORDS.some(keyword => lowerDomain.includes(keyword));
 }
 
+// ==== GATTO METADATA SYSTEM ====
+
+// Tagline pools for deterministic variation (avoid repetition)
+const TAGLINE_POOLS = {
+  reference: [
+    { fr: 'Référence dans sa catégorie', en: 'Category reference' },
+    { fr: 'Parmi les meilleures adresses', en: 'Among the best addresses' },
+    { fr: 'Incontournable de sa catégorie', en: 'Must-visit in its category' },
+    { fr: 'Un des meilleurs choix', en: 'One of the best choices' }
+  ],
+  excellent: [
+    { fr: 'Excellent choix dans sa catégorie', en: 'Excellent choice in its category' },
+    { fr: 'Valeur sûre, régulièrement recommandé', en: 'Reliable choice, regularly recommended' },
+    { fr: 'Parmi les bonnes adresses', en: 'Among the good addresses' },
+    { fr: 'Très bon choix', en: 'Very good choice' }
+  ],
+  good: [
+    { fr: 'Bon choix dans sa catégorie', en: 'Good choice in its category' },
+    { fr: 'Option solide', en: 'Solid option' },
+    { fr: 'Adresse fiable', en: 'Reliable address' },
+    { fr: 'Bien noté', en: 'Well-rated' }
+  ]
+};
+
+// Generate Gatto metadata (badge + tagline) from percentile
+function getGattoMetadata(percentile, categoryCount, poiId, freshBonus, lang = 'fr') {
+  // Skip if category too small (not enough data for meaningful percentile)
+  if (categoryCount < 5) {
+    return { badge: null, tagline: null, percentile: null };
+  }
+
+  // Determine level and badge based on percentile
+  let level, badgeFr, badgeEn;
+
+  if (percentile <= 10) {
+    level = 'reference';
+    badgeFr = 'Référence';
+    badgeEn = 'Reference';
+  } else if (percentile <= 25) {
+    level = 'excellent';
+    badgeFr = 'Excellent';
+    badgeEn = 'Excellent';
+  } else if (percentile <= 40) {
+    level = 'good';
+    badgeFr = 'Valeur sûre';
+    badgeEn = 'Solid choice';
+  } else if (percentile <= 60) {
+    level = 'good';
+    badgeFr = 'Bon choix';
+    badgeEn = 'Good choice';
+  } else {
+    // Bottom 40%: no badge, or "fresh" badge if recent activity
+    if (freshBonus > 5) {
+      return {
+        badge: lang === 'fr' ? 'À suivre' : 'Up & coming',
+        tagline: lang === 'fr' ? 'Nouvelle adresse à suivre' : 'New address to watch',
+        percentile: Math.round(percentile)
+      };
+    }
+    return { badge: null, tagline: null, percentile: null };
+  }
+
+  // Select tagline deterministically (hash-based rotation for consistency)
+  const pool = TAGLINE_POOLS[level];
+  const hash = poiId.split('-')[0].charCodeAt(0) % pool.length;
+  const baseTagline = pool[hash];
+
+  // Format tagline with percentile in requested language
+  const badge = lang === 'fr' ? badgeFr : badgeEn;
+  const tagline = lang === 'fr'
+    ? `${baseTagline.fr} · Top ${Math.round(percentile)}%`
+    : `${baseTagline.en} · Top ${Math.round(percentile)}%`;
+
+  return {
+    badge,
+    tagline,
+    percentile: Math.round(percentile)
+  };
+}
+
 // Parse CSV string to array of lowercase strings
 const toArr = (v) => v ? v.split(',').map(s => s.trim()).filter(Boolean).map(s => s.toLowerCase()) : null;
 
@@ -283,7 +363,8 @@ export default async function poisRoutes(fastify) {
         rating_max,
         sort,
         limit,
-        page
+        page,
+        lang
       });
 
       const cached = poisCache.get(cacheKey);
@@ -369,8 +450,8 @@ export default async function poisRoutes(fastify) {
       // Enrich with photos (card variants only)
       const photosData = await enrichWithPhotos(fastify, poiIds, ['card_sq']);
 
-      // Build response items
-      const items = pois.map(poi => {
+      // Build response items (with Gatto metadata)
+      const items = await Promise.all(pois.map(async poi => {
         // Primary photo
         const poiPhotos = photosData.photos[poi.id] || [];
         const primaryPhoto = poiPhotos.find(p => p.is_primary) || poiPhotos[0];
@@ -407,6 +488,34 @@ export default async function poisRoutes(fastify) {
           }
         }
 
+        // Fetch Gatto metadata (percentile + badge/tagline)
+        let gattoMetadata = { badge: null, tagline: null, percentile: null };
+        if (poi.primary_type && poi.city_slug) {
+          try {
+            const { data: percentileData } = await fastify.supabase.rpc(
+              'get_poi_percentile_by_context',
+              {
+                p_poi_id: poi.id,
+                p_primary_type: poi.primary_type,
+                p_city_slug: poi.city_slug
+              }
+            );
+
+            if (percentileData && percentileData.length > 0) {
+              const { percentile, category_count } = percentileData[0];
+              gattoMetadata = getGattoMetadata(
+                percentile,
+                category_count,
+                poi.id,
+                poi.freshness_bonus || 0,
+                lang
+              );
+            }
+          } catch (e) {
+            fastify.log.error('Failed to fetch Gatto metadata:', e);
+          }
+        }
+
         return {
           id: poi.id,
           slug: pickLang(poi, lang, 'slug'),
@@ -421,13 +530,9 @@ export default async function poisRoutes(fastify) {
           },
           photo,
           price_level: poi.price_level,
-          score: Number(poi.gatto_score || 0),
-          scores: {
-            gatto: Number(poi.gatto_score || 0),
-            digital: Number(poi.digital_score || 0),
-            awards_bonus: Number(poi.awards_bonus || 0),
-            freshness_bonus: Number(poi.freshness_bonus || 0)
-          },
+          // Gatto metadata (percentile-based badge and tagline)
+          gatto_metadata: gattoMetadata,
+          // Note: Gatto score is kept private (not exposed in API)
           rating: {
             google: Number(poi.rating_value || 0),
             reviews_count: poi.rating_reviews_count || 0
@@ -436,7 +541,7 @@ export default async function poisRoutes(fastify) {
           mentions_sample: mentionsSample,
           tags_flat: poi.tags_flat || []
         };
-      });
+      }));
 
       // Calculate pagination metadata
       const totalPages = Math.ceil(totalCount / limit);
@@ -529,13 +634,14 @@ export default async function poisRoutes(fastify) {
 
       const poiId = poi.id;
 
-      // Parallel fetch: scores, rating, photos, mentions, tags
+      // Parallel fetch: scores, rating, photos, mentions, tags, percentile
       const [
         { data: scores },
         { data: rating },
         photosData,
         { data: mentions },
-        { data: enrichedTags }
+        { data: enrichedTags },
+        { data: percentileData }
       ] = await Promise.all([
         // Scores
         fastify.supabase
@@ -566,6 +672,13 @@ export default async function poisRoutes(fastify) {
         fastify.supabase.rpc('enrich_tags_with_labels', {
           p_tags: poi.tags,
           p_lang: lang
+        }),
+
+        // Percentile for Gatto metadata
+        fastify.supabase.rpc('get_poi_percentile_by_context', {
+          p_poi_id: poiId,
+          p_primary_type: poi.primary_type,
+          p_city_slug: poi.city_slug
         })
       ]);
 
@@ -629,6 +742,19 @@ export default async function poisRoutes(fastify) {
         }
       }
 
+      // Generate Gatto metadata from percentile
+      let gattoMetadata = { badge: null, tagline: null, percentile: null };
+      if (percentileData && percentileData.length > 0) {
+        const { percentile, category_count } = percentileData[0];
+        gattoMetadata = getGattoMetadata(
+          percentile,
+          category_count,
+          poi.id,
+          scores?.freshness_bonus || 0,
+          lang
+        );
+      }
+
       // Build response
       const response = {
         id: poi.id,
@@ -653,13 +779,9 @@ export default async function poisRoutes(fastify) {
           primary: photosPrimary,
           gallery: photosGallery
         },
-        scores: {
-          gatto: Number(scores?.gatto_score || 0),
-          digital: Number(scores?.digital_score || 0),
-          awards_bonus: Number(scores?.awards_bonus || 0),
-          freshness_bonus: Number(scores?.freshness_bonus || 0),
-          calculated_at: scores?.calculated_at
-        },
+        // Gatto metadata (percentile-based badge and tagline)
+        gatto_metadata: gattoMetadata,
+        // Note: Gatto score is kept private (not exposed in API)
         rating: {
           google: Number(rating?.rating_value || 0),
           reviews_count: rating?.reviews_count || 0
