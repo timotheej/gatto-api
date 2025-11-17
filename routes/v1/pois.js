@@ -31,6 +31,17 @@ function getCacheKey(prefix, params) {
 
 // ==== HELPERS ====
 
+// Blacklisted domains for legal reasons (trademark protection)
+// Only the most litigious brands to avoid legal issues
+const FAVICON_BRAND_KEYWORDS = ['michelin', 'gaultmillau', 'gault-millau'];
+
+// Check if domain should use default favicon instead of brand favicon
+function shouldUseDefaultFavicon(domain) {
+  if (!domain) return false;
+  const lowerDomain = domain.toLowerCase();
+  return FAVICON_BRAND_KEYWORDS.some(keyword => lowerDomain.includes(keyword));
+}
+
 // Parse CSV string to array of lowercase strings
 const toArr = (v) => v ? v.split(',').map(s => s.trim()).filter(Boolean).map(s => s.toLowerCase()) : null;
 
@@ -385,7 +396,9 @@ export default async function poisRoutes(fastify) {
               : poi.mentions_sample;
             mentionsSample = samples.map(m => ({
               domain: m.domain,
-              favicon: `https://www.google.com/s2/favicons?domain=${m.domain}&sz=64`,
+              favicon: shouldUseDefaultFavicon(m.domain)
+                ? `https://www.google.com/s2/favicons?domain=example.com&sz=64`
+                : `https://www.google.com/s2/favicons?domain=${m.domain}&sz=64`,
               url: m.url,
               title: m.title
             }));
@@ -547,8 +560,7 @@ export default async function poisRoutes(fastify) {
           .select('domain, title, excerpt, url, published_at_guess, last_seen_at')
           .eq('poi_id', poiId)
           .eq('ai_decision', 'ACCEPT')
-          .order('published_at_guess', { ascending: false })
-          .limit(6),
+          .order('published_at_guess', { ascending: false }),
 
         // Tags enrichment
         fastify.supabase.rpc('enrich_tags_with_labels', {
@@ -591,7 +603,9 @@ export default async function poisRoutes(fastify) {
       // Mentions sample
       const mentionsSample = (mentions || []).map(m => ({
         domain: m.domain,
-        favicon: `https://www.google.com/s2/favicons?domain=${m.domain}&sz=64`,
+        favicon: shouldUseDefaultFavicon(m.domain)
+          ? `https://www.google.com/s2/favicons?domain=example.com&sz=64`
+          : `https://www.google.com/s2/favicons?domain=${m.domain}&sz=64`,
         title: m.title,
         excerpt: m.excerpt,
         url: m.url,
