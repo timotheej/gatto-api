@@ -468,17 +468,26 @@ BEGIN
       SELECT
         pt.type_key AS value,
         CASE
-          WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en
-          ELSE pt.label_fr
+          -- Si type générique (type_key = parent_category), ajouter suffix "(autre)"
+          WHEN pt.type_key = pt.parent_category THEN
+            CASE
+              WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en || ' (other)'
+              ELSE pt.label_fr || ' (autre)'
+            END
+          -- Sinon, label normal
+          ELSE
+            CASE
+              WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en
+              ELSE pt.label_fr
+            END
         END AS label,
         pt.parent_category AS parent_category,
         COUNT(DISTINCT b.id)::int AS count
       FROM excl_primary_type_global b
       JOIN public.poi_types pt ON (
-        (lower(pt.type_key) = lower(b.primary_type::text))
-        OR (b.subcategories_lc IS NOT NULL AND lower(pt.type_key) = ANY(b.subcategories_lc))
+        lower(pt.type_key) = lower(b.primary_type::text)
+        AND pt.is_active = true
       )
-      WHERE pt.is_active = true
       GROUP BY pt.type_key, pt.label_en, pt.label_fr, pt.parent_category
       ORDER BY count DESC
       LIMIT 200
@@ -583,17 +592,26 @@ BEGIN
       SELECT
         pt.type_key AS value,
         CASE
-          WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en
-          ELSE pt.label_fr
+          -- Si type générique (type_key = parent_category), ajouter suffix "(autre)"
+          WHEN pt.type_key = pt.parent_category THEN
+            CASE
+              WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en || ' (other)'
+              ELSE pt.label_fr || ' (autre)'
+            END
+          -- Sinon, label normal
+          ELSE
+            CASE
+              WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en
+              ELSE pt.label_fr
+            END
         END AS label,
         pt.parent_category AS parent_category,
         COUNT(DISTINCT b.id)::int AS count
       FROM excl_primary_type_bbox b
       JOIN public.poi_types pt ON (
-        (lower(pt.type_key) = lower(b.primary_type::text))
-        OR (b.subcategories_lc IS NOT NULL AND lower(pt.type_key) = ANY(b.subcategories_lc))
+        lower(pt.type_key) = lower(b.primary_type::text)
+        AND pt.is_active = true
       )
-      WHERE pt.is_active = true
       GROUP BY pt.type_key, pt.label_en, pt.label_fr, pt.parent_category
       ORDER BY count DESC
       LIMIT 200
