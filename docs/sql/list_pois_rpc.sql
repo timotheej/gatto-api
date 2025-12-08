@@ -12,16 +12,24 @@
 -- - Priority logic: if bbox provided, it overrides city_slug
 -- ==================================================
 
+-- Drop all versions of the function to avoid conflicts
 DROP FUNCTION IF EXISTS list_pois(
   FLOAT[], TEXT, TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[],
   INT, INT, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN, TEXT, INT, INT
 );
 
+DROP FUNCTION IF EXISTS list_pois(
+  FLOAT[], TEXT, TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[],
+  INT, INT, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN, TEXT, INT, INT
+) CASCADE;
+
 CREATE OR REPLACE FUNCTION list_pois(
   p_bbox FLOAT[] DEFAULT NULL,          -- [lat_min, lng_min, lat_max, lng_max] (optional)
   p_city_slug TEXT DEFAULT NULL,        -- city slug (optional)
-  p_primary_types TEXT[] DEFAULT NULL,
-  p_subcategories TEXT[] DEFAULT NULL,
+  p_parent_categories TEXT[] DEFAULT NULL,  -- New: filter by parent category groups
+  p_type_keys TEXT[] DEFAULT NULL,          -- New: filter by specific type keys
+  p_primary_types TEXT[] DEFAULT NULL,      -- Legacy: kept for backward compatibility
+  p_subcategories TEXT[] DEFAULT NULL,      -- Legacy: kept for backward compatibility
   p_neighbourhood_slugs TEXT[] DEFAULT NULL,
   p_district_slugs TEXT[] DEFAULT NULL,
   p_tags_all TEXT[] DEFAULT NULL,       -- AND logic
@@ -116,6 +124,10 @@ BEGIN
   norm AS (
     SELECT
       v_city_slug AS city_slug,
+      CASE WHEN p_parent_categories IS NULL THEN NULL
+           ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_parent_categories) AS t(x)) END AS parent_categories_lc,
+      CASE WHEN p_type_keys IS NULL THEN NULL
+           ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_type_keys) AS t(x)) END AS type_keys_lc,
       CASE WHEN p_primary_types IS NULL THEN NULL
            ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_primary_types) AS t(x)) END AS primary_types_lc,
       CASE WHEN p_subcategories IS NULL THEN NULL
@@ -135,6 +147,26 @@ BEGIN
       CASE WHEN p_rating_min BETWEEN 0 AND 5 THEN p_rating_min ELSE NULL END AS rating_min,
       CASE WHEN p_rating_max BETWEEN 0 AND 5 THEN p_rating_max ELSE NULL END AS rating_max,
       p_bbox AS bbox_valid
+  ),
+
+  -- 1b) Expansion des filtres via poi_types (hiérarchie)
+  expanded_types AS (
+    SELECT DISTINCT
+      pt.type_key,
+      pt.parent_category
+    FROM public.poi_types pt
+    CROSS JOIN norm n
+    WHERE pt.is_active = true
+      AND (
+        -- Si parent_categories fourni, inclure tous les types de ces groupes
+        (n.parent_categories_lc IS NOT NULL AND lower(pt.parent_category) = ANY(n.parent_categories_lc))
+        -- Si type_keys fourni, inclure ces types spécifiques
+        OR (n.type_keys_lc IS NOT NULL AND lower(pt.type_key) = ANY(n.type_keys_lc))
+        -- Legacy: Si primary_types fourni, inclure ces types
+        OR (n.primary_types_lc IS NOT NULL AND lower(pt.type_key) = ANY(n.primary_types_lc))
+        -- Si aucun filtre de type, inclure tous (pour ne pas filtrer)
+        OR (n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL AND n.primary_types_lc IS NULL)
+      )
   ),
 
   -- 2) Sources métriques
@@ -183,6 +215,28 @@ BEGIN
     GROUP BY poi_id
   ),
 
+  -- 3b) Type matching (seulement si des filtres de type sont fournis)
+  type_matches AS (
+    SELECT DISTINCT
+      p.id AS poi_id,
+      CASE
+        WHEN lower(et.type_key) = lower(p.primary_type::text) THEN 1.0
+        ELSE 0.5
+      END AS match_score
+    FROM public.poi p
+    CROSS JOIN norm n
+    CROSS JOIN expanded_types et
+    WHERE p.publishable_status = 'eligible'
+      -- Seulement si des filtres de type sont fournis
+      AND (n.parent_categories_lc IS NOT NULL OR n.type_keys_lc IS NOT NULL OR n.primary_types_lc IS NOT NULL)
+      AND (
+        lower(et.type_key) = lower(p.primary_type::text)
+        OR (p.subcategories IS NOT NULL AND lower(et.type_key) = ANY(
+          SELECT lower(sub) FROM unnest(p.subcategories) AS sub
+        ))
+      )
+  ),
+
   -- 4) Base enrichie
   base AS (
     SELECT
@@ -226,6 +280,8 @@ BEGIN
         FROM jsonb_array_elements(COALESCE(p.awards,'[]'::jsonb)) aw
         WHERE aw ? 'provider'
       ), '{}'::text[]) AS awards_providers,
+      -- Type relevance score (optimisé avec LEFT JOIN)
+      COALESCE(MAX(tm.match_score), 0.0)::numeric AS type_relevance_score,
       -- métriques
       sc.sc_gatto_score     AS gatto_score,
       sc.sc_digital_score   AS digital_score,
@@ -237,10 +293,22 @@ BEGIN
       COALESCE(mt.mt_mentions_count, 0)::integer AS mentions_count,
       COALESCE(mt.mt_mentions_sample, '[]'::jsonb) AS mentions_sample
     FROM public.poi p
-    JOIN scores   sc ON sc.poi_id = p.id
+    LEFT JOIN scores   sc ON sc.poi_id = p.id
     LEFT JOIN ratings  rt ON rt.poi_id = p.id
     LEFT JOIN mentions mt ON mt.poi_id = p.id
+    LEFT JOIN type_matches tm ON tm.poi_id = p.id
     WHERE p.publishable_status = 'eligible'
+    GROUP BY
+      p.id, p.google_place_id, p.city_slug, p.name, p.name_en, p.name_fr,
+      p.slug_en, p.slug_fr, p.primary_type, p.address_street, p.city, p.country,
+      p.lat, p.lng, p.opening_hours, p.price_level, p.phone, p.website,
+      p.district_slug, p.neighbourhood_slug, p.publishable_status,
+      p.ai_summary, p.ai_summary_en, p.ai_summary_fr, p.tags, p.subcategories,
+      p.created_at, p.updated_at,
+      sc.sc_gatto_score, sc.sc_digital_score, sc.sc_awards_bonus,
+      sc.sc_freshness_bonus, sc.sc_calculated_at,
+      rt.rt_rating_value, rt.rt_reviews_count,
+      mt.mt_mentions_count, mt.mt_mentions_sample
   ),
 
   -- 5) Filtres (bbox prioritaire, sinon city)
@@ -249,8 +317,10 @@ BEGIN
     FROM base b
     CROSS JOIN norm n
     WHERE
+      -- REQUIRED: POI must have a gatto_score to be displayed
+      b.gatto_score IS NOT NULL
       -- Priority logic: if bbox provided, filter by bbox; otherwise filter by city
-      (
+      AND (
         (n.bbox_valid IS NOT NULL AND (
           b.lat IS NOT NULL AND b.lng IS NOT NULL
           AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
@@ -259,8 +329,12 @@ BEGIN
         OR
         (n.bbox_valid IS NULL AND b.city_slug = n.city_slug)
       )
-      -- Other filters
-      AND (n.primary_types_lc IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
+      -- Hierarchical type filtering (new) OR legacy filtering (for backward compatibility)
+      AND (
+        (n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL AND n.primary_types_lc IS NULL)
+        OR b.type_relevance_score > 0
+      )
+      -- Legacy subcategory filter (kept for backward compatibility)
       AND (n.subcategories_lc IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
       AND (n.price_min IS NULL OR (
         CASE b.price_level
@@ -311,9 +385,9 @@ BEGIN
             WHEN 'PRICE_LEVEL_EXPENSIVE' THEN 3
             WHEN 'PRICE_LEVEL_VERY_EXPENSIVE' THEN 4
           END, 0)::numeric
-        WHEN 'mentions'   THEN f.mentions_count::numeric
-        WHEN 'rating'     THEN f.rating_value
-        ELSE f.gatto_score
+        WHEN 'mentions'   THEN COALESCE(f.mentions_count, 0)::numeric
+        WHEN 'rating'     THEN COALESCE(f.rating_value, 0)::numeric
+        ELSE COALESCE(f.gatto_score, 0)::numeric
       END AS sort_key
     FROM filtered f
     ORDER BY sort_key DESC NULLS LAST, f.id ASC

@@ -75,12 +75,16 @@ export default async function poisFacetsRoutes(fastify) {
         // 1) Validate query parameters with Zod
         const validatedQuery = PoisFacetsQuerySchema.parse(request.query);
 
-        const primaryTypes = uniq(
-          parseCsvToArray(validatedQuery.primary_type, { lowercase: true })
+        const lang = validatedQuery.lang || fastify.getLang(request);
+
+        // New hierarchical type filters
+        const parentCategories = uniq(
+          parseCsvToArray(validatedQuery.parent_categories, { lowercase: true })
         );
-        const subcategories = uniq(
-          parseCsvToArray(validatedQuery.subcategory, { lowercase: true })
+        const typeKeys = uniq(
+          parseCsvToArray(validatedQuery.type_keys, { lowercase: true })
         );
+
         const tagsAll = uniq(parseCsvToArray(validatedQuery.tags, { lowercase: true }));
         const tagsAny = uniq(parseCsvToArray(validatedQuery.tags_any, { lowercase: true }));
         const awardsProviders = uniq(
@@ -110,8 +114,8 @@ export default async function poisFacetsRoutes(fastify) {
 
         const rpcParams = {
           p_city_slug: validatedQuery.city,
-          p_primary_types: primaryTypes ?? null,
-          p_subcategories: subcategories ?? null,
+          p_parent_categories: parentCategories ?? null,
+          p_type_keys: typeKeys ?? null,
           p_district_slugs: districtSlugs ?? null,
           p_neighbourhood_slugs: neighbourhoodSlugs ?? null,
           p_tags_all: tagsAll ?? null,
@@ -124,7 +128,8 @@ export default async function poisFacetsRoutes(fastify) {
           p_bbox: bbox ?? null,
           p_awarded: awarded, // null/true/false
           p_fresh: fresh, // null/true/false
-          p_sort: validatedQuery.sort
+          p_sort: validatedQuery.sort,
+          p_lang: lang // Pass lang parameter for translations
         };
 
         // Appel RPC

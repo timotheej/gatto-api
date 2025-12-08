@@ -1,15 +1,16 @@
 -- =====================================================
 -- rpc_get_pois_facets - Facettes contextuelles pour les POI
 -- =====================================================
--- Version sans paramètre p_lang (inutilisé)
+-- Version avec support hiérarchique (parent_category + type_key)
+-- et traductions multilingues via poi_types
 --
 -- DEPLOY: Exécuter ce script dans Supabase SQL Editor
 --
 
 CREATE OR REPLACE FUNCTION public.rpc_get_pois_facets(
   p_city_slug text DEFAULT NULL,
-  p_primary_types text[] DEFAULT NULL,
-  p_subcategories text[] DEFAULT NULL,
+  p_parent_categories text[] DEFAULT NULL,  -- Nouveau: filtrer par groupes (ex: ['restaurant', 'bar'])
+  p_type_keys text[] DEFAULT NULL,          -- Nouveau: filtrer par types spécifiques (ex: ['italian_restaurant'])
   p_district_slugs text[] DEFAULT NULL,
   p_neighbourhood_slugs text[] DEFAULT NULL,
   p_tags_all text[] DEFAULT NULL,
@@ -22,12 +23,15 @@ CREATE OR REPLACE FUNCTION public.rpc_get_pois_facets(
   p_bbox numeric[] DEFAULT NULL,
   p_awarded boolean DEFAULT NULL,
   p_fresh boolean DEFAULT NULL,
-  p_sort text DEFAULT 'gatto'
+  p_sort text DEFAULT 'gatto',
+  p_lang text DEFAULT 'fr'                  -- Nouveau: langue pour les labels (fr|en)
 )
 RETURNS jsonb
 LANGUAGE plpgsql
 STABLE
 AS $$
+DECLARE
+  v_lang text := COALESCE(lower(p_lang), 'fr');
 BEGIN
   RETURN (
     WITH
@@ -37,8 +41,9 @@ BEGIN
     norm AS (
       SELECT
         lower(p_city_slug) AS city_slug,
-        CASE WHEN p_primary_types       IS NULL THEN NULL ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_primary_types)       AS t(x)) END AS primary_types_lc,
-        CASE WHEN p_subcategories       IS NULL THEN NULL ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_subcategories)       AS t(x)) END AS subcategories_lc,
+        v_lang AS lang,
+        CASE WHEN p_parent_categories   IS NULL THEN NULL ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_parent_categories)   AS t(x)) END AS parent_categories_lc,
+        CASE WHEN p_type_keys           IS NULL THEN NULL ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_type_keys)           AS t(x)) END AS type_keys_lc,
         CASE WHEN p_district_slugs      IS NULL THEN NULL ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_district_slugs)      AS t(x)) END AS district_slugs_lc,
         CASE WHEN p_neighbourhood_slugs IS NULL THEN NULL ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_neighbourhood_slugs) AS t(x)) END AS neighbourhood_slugs_lc,
         CASE WHEN p_tags_all            IS NULL THEN NULL ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_tags_all)            AS t(x)) END AS tags_all_lc,
@@ -59,6 +64,27 @@ BEGIN
           THEN p_bbox
           ELSE NULL
         END AS bbox_valid
+    ),
+
+    /* -----------------------------
+       1b) Expansion des filtres via poi_types
+           Si parent_categories fourni, on récupère tous les type_keys associés
+       ----------------------------- */
+    expanded_types AS (
+      SELECT DISTINCT
+        pt.type_key,
+        pt.parent_category
+      FROM public.poi_types pt
+      CROSS JOIN norm n
+      WHERE pt.is_active = true
+        AND (
+          -- Si parent_categories fourni, inclure tous les types de ces groupes
+          (n.parent_categories_lc IS NOT NULL AND lower(pt.parent_category) = ANY(n.parent_categories_lc))
+          -- Si type_keys fourni, inclure ces types spécifiques
+          OR (n.type_keys_lc IS NOT NULL AND lower(pt.type_key) = ANY(n.type_keys_lc))
+          -- Si aucun filtre de type, inclure tous (pour facettes)
+          OR (n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL)
+        )
     ),
 
     /* -----------------------------
@@ -123,6 +149,21 @@ BEGIN
           WHERE aw ? 'provider'
         ), '{}'::text[]) AS awards_providers,
 
+        /* Calcul de relevance_score et type matching */
+        CASE
+          -- Match exact sur primary_type = type_key recherché
+          WHEN EXISTS (
+            SELECT 1 FROM expanded_types et
+            WHERE lower(et.type_key) = lower(p.primary_type::text)
+          ) THEN 1.0
+          -- Match dans subcategories = type_key recherché
+          WHEN EXISTS (
+            SELECT 1 FROM expanded_types et, unnest(p.subcategories) AS sub
+            WHERE lower(et.type_key) = lower(sub)
+          ) THEN 0.5
+          ELSE 0.0
+        END::numeric AS type_relevance_score,
+
         /* métriques jointes */
         sc.sc_gatto_score     AS gatto_score,
         sc.sc_digital_score   AS digital_score,
@@ -147,8 +188,8 @@ BEGIN
       FROM base b
       CROSS JOIN norm n
       WHERE b.city_slug = n.city_slug
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        -- Nouveau: filtrage par types (parent_categories OU type_keys) via type_relevance_score
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -172,8 +213,8 @@ BEGIN
         AND b.lat IS NOT NULL AND b.lng IS NOT NULL
         AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
         AND b.lng BETWEEN n.bbox_valid[2] AND n.bbox_valid[4]
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        -- Nouveau: filtrage par types (parent_categories OU type_keys) via type_relevance_score
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -198,8 +239,7 @@ BEGIN
       FROM base b
       CROSS JOIN norm n
       WHERE b.city_slug = n.city_slug
-        -- EXCLUS: primary_types_lc
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        -- EXCLUS: filtre de types (parent_categories / type_keys)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -219,9 +259,8 @@ BEGIN
       FROM base b
       CROSS JOIN norm n
       WHERE b.city_slug = n.city_slug
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         -- EXCLUS: district_slugs_lc
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -240,8 +279,7 @@ BEGIN
       FROM base b
       CROSS JOIN norm n
       WHERE b.city_slug = n.city_slug
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -261,8 +299,7 @@ BEGIN
       FROM base b
       CROSS JOIN norm n
       WHERE b.city_slug = n.city_slug
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -288,8 +325,7 @@ BEGIN
         AND b.lat IS NOT NULL AND b.lng IS NOT NULL
         AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
         AND b.lng BETWEEN n.bbox_valid[2] AND n.bbox_valid[4]
-        -- EXCLUS: primary_types_lc
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        -- EXCLUS: filtre de types (parent_categories / type_keys)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -313,9 +349,8 @@ BEGIN
         AND b.lat IS NOT NULL AND b.lng IS NOT NULL
         AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
         AND b.lng BETWEEN n.bbox_valid[2] AND n.bbox_valid[4]
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         -- EXCLUS: district_slugs_lc
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -338,8 +373,7 @@ BEGIN
         AND b.lat IS NOT NULL AND b.lng IS NOT NULL
         AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
         AND b.lng BETWEEN n.bbox_valid[2] AND n.bbox_valid[4]
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -363,8 +397,7 @@ BEGIN
         AND b.lat IS NOT NULL AND b.lng IS NOT NULL
         AND b.lat BETWEEN n.bbox_valid[1] AND n.bbox_valid[3]
         AND b.lng BETWEEN n.bbox_valid[2] AND n.bbox_valid[4]
-        AND (n.primary_types_lc       IS NULL OR b.primary_type_slug = ANY(n.primary_types_lc))
-        AND (n.subcategories_lc       IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
+        AND ((n.parent_categories_lc IS NULL AND n.type_keys_lc IS NULL) OR b.type_relevance_score > 0)
         AND (n.price_min              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric >= n.price_min))
         AND (n.price_max              IS NULL OR (b.price_level_numeric IS NOT NULL AND b.price_level_numeric <= n.price_max))
         AND (n.rating_min             IS NULL OR b.rating_value >= n.rating_min)
@@ -390,23 +423,63 @@ BEGIN
     ),
 
     /* -----------------------------
-       7) Facettes (GLOBAL)
+       7) Facettes (GLOBAL) - Hiérarchiques avec traductions
        ----------------------------- */
-    facet_global_primary_type AS (
-      SELECT primary_type_slug AS value, COUNT(*)::int AS count
-      FROM excl_primary_type_global
-      WHERE primary_type_slug IS NOT NULL
-      GROUP BY primary_type_slug
+    -- Facettes par parent_category (groupes)
+    facet_global_parent_categories AS (
+      SELECT
+        pt.parent_category AS value,
+        CASE pt.parent_category
+          WHEN 'restaurant' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Restaurant' ELSE 'Restaurant' END
+          WHEN 'bar' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Bar' ELSE 'Bar' END
+          WHEN 'cafe' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Café' ELSE 'Café' END
+          WHEN 'bakery' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Bakery' ELSE 'Boulangerie' END
+          WHEN 'dessert' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Dessert' ELSE 'Dessert' END
+          WHEN 'food_retail' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Food Shop' ELSE 'Épicerie' END
+          WHEN 'nightlife' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Nightlife' ELSE 'Vie nocturne' END
+          WHEN 'lodging' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Lodging' ELSE 'Hébergement' END
+          WHEN 'culture' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Culture' ELSE 'Culture' END
+          WHEN 'entertainment' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Entertainment' ELSE 'Divertissement' END
+          WHEN 'wellness' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Wellness' ELSE 'Bien-être' END
+          WHEN 'health' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Health' ELSE 'Santé' END
+          WHEN 'sports' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Sports' ELSE 'Sports' END
+          WHEN 'retail' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Shopping' ELSE 'Commerce' END
+          WHEN 'services' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Services' ELSE 'Services' END
+          WHEN 'automotive' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Automotive' ELSE 'Automobile' END
+          WHEN 'transport' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Transportation' ELSE 'Transport' END
+          WHEN 'parks' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Parks' ELSE 'Parcs' END
+          WHEN 'government' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Government' ELSE 'Administration' END
+          WHEN 'education' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Education' ELSE 'Éducation' END
+          WHEN 'finance' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Finance' ELSE 'Finance' END
+          WHEN 'other' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Other' ELSE 'Autre' END
+          ELSE pt.parent_category
+        END AS label,
+        COUNT(DISTINCT b.id)::int AS count
+      FROM excl_primary_type_global b
+      JOIN public.poi_types pt ON (
+        lower(pt.type_key) = lower(b.primary_type::text)
+        AND pt.is_active = true
+      )
+      GROUP BY pt.parent_category
       ORDER BY count DESC
     ),
-    facet_global_subcategories AS (
-      SELECT val AS value, COUNT(*)::int AS count
-      FROM (
-        SELECT unnest(subcategories_lc) AS val
-        FROM filtered_global
-        WHERE subcategories_lc IS NOT NULL
-      ) s
-      GROUP BY val
+    -- Facettes par type_key (types spécifiques)
+    facet_global_type_keys AS (
+      SELECT
+        pt.type_key AS value,
+        CASE
+          WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en
+          ELSE pt.label_fr
+        END AS label,
+        pt.parent_category AS parent_category,
+        COUNT(DISTINCT b.id)::int AS count
+      FROM excl_primary_type_global b
+      JOIN public.poi_types pt ON (
+        (lower(pt.type_key) = lower(b.primary_type::text))
+        OR (b.subcategories_lc IS NOT NULL AND lower(pt.type_key) = ANY(b.subcategories_lc))
+      )
+      WHERE pt.is_active = true
+      GROUP BY pt.type_key, pt.label_en, pt.label_fr, pt.parent_category
       ORDER BY count DESC
       LIMIT 200
     ),
@@ -465,23 +538,63 @@ BEGIN
     ),
 
     /* -----------------------------
-       8) Facettes (BBOX si fourni)
+       8) Facettes (BBOX si fourni) - Hiérarchiques avec traductions
        ----------------------------- */
-    facet_bbox_primary_type AS (
-      SELECT primary_type_slug AS value, COUNT(*)::int AS count
-      FROM excl_primary_type_bbox
-      WHERE primary_type_slug IS NOT NULL
-      GROUP BY primary_type_slug
+    -- Facettes par parent_category (groupes)
+    facet_bbox_parent_categories AS (
+      SELECT
+        pt.parent_category AS value,
+        CASE pt.parent_category
+          WHEN 'restaurant' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Restaurant' ELSE 'Restaurant' END
+          WHEN 'bar' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Bar' ELSE 'Bar' END
+          WHEN 'cafe' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Café' ELSE 'Café' END
+          WHEN 'bakery' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Bakery' ELSE 'Boulangerie' END
+          WHEN 'dessert' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Dessert' ELSE 'Dessert' END
+          WHEN 'food_retail' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Food Shop' ELSE 'Épicerie' END
+          WHEN 'nightlife' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Nightlife' ELSE 'Vie nocturne' END
+          WHEN 'lodging' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Lodging' ELSE 'Hébergement' END
+          WHEN 'culture' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Culture' ELSE 'Culture' END
+          WHEN 'entertainment' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Entertainment' ELSE 'Divertissement' END
+          WHEN 'wellness' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Wellness' ELSE 'Bien-être' END
+          WHEN 'health' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Health' ELSE 'Santé' END
+          WHEN 'sports' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Sports' ELSE 'Sports' END
+          WHEN 'retail' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Shopping' ELSE 'Commerce' END
+          WHEN 'services' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Services' ELSE 'Services' END
+          WHEN 'automotive' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Automotive' ELSE 'Automobile' END
+          WHEN 'transport' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Transportation' ELSE 'Transport' END
+          WHEN 'parks' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Parks' ELSE 'Parcs' END
+          WHEN 'government' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Government' ELSE 'Administration' END
+          WHEN 'education' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Education' ELSE 'Éducation' END
+          WHEN 'finance' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Finance' ELSE 'Finance' END
+          WHEN 'other' THEN CASE WHEN (SELECT lang FROM norm) = 'en' THEN 'Other' ELSE 'Autre' END
+          ELSE pt.parent_category
+        END AS label,
+        COUNT(DISTINCT b.id)::int AS count
+      FROM excl_primary_type_bbox b
+      JOIN public.poi_types pt ON (
+        lower(pt.type_key) = lower(b.primary_type::text)
+        AND pt.is_active = true
+      )
+      GROUP BY pt.parent_category
       ORDER BY count DESC
     ),
-    facet_bbox_subcategories AS (
-      SELECT val AS value, COUNT(*)::int AS count
-      FROM (
-        SELECT unnest(subcategories_lc) AS val
-        FROM filtered_bbox
-        WHERE subcategories_lc IS NOT NULL
-      ) s
-      GROUP BY val
+    -- Facettes par type_key (types spécifiques)
+    facet_bbox_type_keys AS (
+      SELECT
+        pt.type_key AS value,
+        CASE
+          WHEN (SELECT lang FROM norm) = 'en' THEN pt.label_en
+          ELSE pt.label_fr
+        END AS label,
+        pt.parent_category AS parent_category,
+        COUNT(DISTINCT b.id)::int AS count
+      FROM excl_primary_type_bbox b
+      JOIN public.poi_types pt ON (
+        (lower(pt.type_key) = lower(b.primary_type::text))
+        OR (b.subcategories_lc IS NOT NULL AND lower(pt.type_key) = ANY(b.subcategories_lc))
+      )
+      WHERE pt.is_active = true
+      GROUP BY pt.type_key, pt.label_en, pt.label_fr, pt.parent_category
       ORDER BY count DESC
       LIMIT 200
     ),
@@ -545,11 +658,12 @@ BEGIN
     SELECT jsonb_build_object(
       'context', jsonb_build_object(
         'city', (SELECT city_slug FROM norm),
+        'lang', (SELECT lang FROM norm),
         'total_global', (SELECT total_global FROM totals),
         'total_bbox',   (SELECT total_bbox   FROM totals),
         'applied_filters', jsonb_strip_nulls(jsonb_build_object(
-          'primary_type',       (SELECT primary_types_lc       FROM norm),
-          'subcategory',        (SELECT subcategories_lc       FROM norm),
+          'parent_categories',  (SELECT parent_categories_lc  FROM norm),
+          'type_keys',          (SELECT type_keys_lc          FROM norm),
           'price',              (SELECT CASE WHEN price_min IS NULL AND price_max IS NULL THEN NULL
                                              ELSE jsonb_build_object('min', price_min, 'max', price_max) END FROM norm),
           'rating',             (SELECT CASE WHEN rating_min IS NULL AND rating_max IS NULL THEN NULL
@@ -567,8 +681,8 @@ BEGIN
       ),
       'facets', jsonb_build_object(
         'global', jsonb_build_object(
-          'primary_type',       COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', initcap(replace(value,'_',' ')), 'count', count)) FROM facet_global_primary_type), '[]'::jsonb),
-          'subcategories',      COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', initcap(replace(value,'_',' ')), 'count', count)) FROM facet_global_subcategories), '[]'::jsonb),
+          'parent_categories',  COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', label, 'count', count)) FROM facet_global_parent_categories), '[]'::jsonb),
+          'type_keys',          COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', label, 'parent_category', parent_category, 'count', count)) FROM facet_global_type_keys), '[]'::jsonb),
           'price_level',        COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label',
                                             CASE value WHEN '1' THEN '€' WHEN '2' THEN '€€' WHEN '3' THEN '€€€' WHEN '4' THEN '€€€€' ELSE value END,
                                             'count', count)) FROM facet_global_price), '[]'::jsonb),
@@ -581,8 +695,8 @@ BEGIN
         'bbox',
           CASE WHEN (SELECT bbox_valid FROM norm) IS NOT NULL THEN
             jsonb_build_object(
-              'primary_type',       COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', initcap(replace(value,'_',' ')), 'count', count)) FROM facet_bbox_primary_type), '[]'::jsonb),
-              'subcategories',      COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', initcap(replace(value,'_',' ')), 'count', count)) FROM facet_bbox_subcategories), '[]'::jsonb),
+              'parent_categories',  COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', label, 'count', count)) FROM facet_bbox_parent_categories), '[]'::jsonb),
+              'type_keys',          COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label', label, 'parent_category', parent_category, 'count', count)) FROM facet_bbox_type_keys), '[]'::jsonb),
               'price_level',        COALESCE((SELECT jsonb_agg(jsonb_build_object('value', value, 'label',
                                                   CASE value WHEN '1' THEN '€' WHEN '2' THEN '€€' WHEN '3' THEN '€€€' WHEN '4' THEN '€€€€' ELSE value END,
                                                   'count', count)) FROM facet_bbox_price), '[]'::jsonb),

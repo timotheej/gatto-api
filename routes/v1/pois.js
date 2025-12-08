@@ -318,6 +318,8 @@ export default async function poisRoutes(fastify) {
       const {
         bbox,
         city,
+        parent_categories,
+        type_keys,
         primary_type,
         subcategory,
         neighbourhood_slug,
@@ -347,6 +349,8 @@ export default async function poisRoutes(fastify) {
       const cacheKey = getCacheKey('pois', {
         bbox: bboxArray ? bboxArray.join(',') : undefined,
         city: city || undefined,
+        parent_categories,
+        type_keys,
         primary_type,
         subcategory,
         neighbourhood_slug,
@@ -378,6 +382,8 @@ export default async function poisRoutes(fastify) {
       fastify.log.info({ cacheKey, endpoint: '/v1/pois' }, 'Cache MISS');
 
       // Parse parameters (limit and page are already validated by Zod)
+      const parentCategories = toArr(parent_categories);
+      const typeKeys = toArr(type_keys);
       const primaryTypes = toArr(primary_type);
       const subcategories = toArr(subcategory);
       const districtSlugs = toArr(district_slug);
@@ -413,6 +419,8 @@ export default async function poisRoutes(fastify) {
       const { data: rows, error } = await fastify.supabase.rpc('list_pois', {
         p_bbox: bboxArray,
         p_city_slug: cityParam,
+        p_parent_categories: parentCategories,
+        p_type_keys: typeKeys,
         p_primary_types: primaryTypes,
         p_subcategories: subcategories,
         p_neighbourhood_slugs: neighbourhoodSlugs,
@@ -530,6 +538,7 @@ export default async function poisRoutes(fastify) {
           },
           photo,
           price_level: poi.price_level,
+          has_awards: (poi.awards_bonus || 0) > 0,
           // Gatto metadata (percentile-based badge and tagline)
           gatto_metadata: gattoMetadata,
           // Note: Gatto score is kept private (not exposed in API)

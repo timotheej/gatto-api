@@ -36,6 +36,12 @@ export const PoisQuerySchema = z.object({
 
   city: SlugSchema.optional(),
 
+  // New hierarchical type filters
+  parent_categories: CsvListSchema.optional(),
+
+  type_keys: CsvListSchema.optional(),
+
+  // Legacy type filters (kept for backward compatibility)
   primary_type: CsvListSchema.optional(),
 
   subcategory: CsvListSchema.optional(),
@@ -105,9 +111,10 @@ export const PoisFacetsQuerySchema = z.object({
 
   city: SlugSchema.default('paris'),
 
-  primary_type: CsvListSchema.optional(),
+  // New hierarchical type filters
+  parent_categories: CsvListSchema.optional(),
 
-  subcategory: CsvListSchema.optional(),
+  type_keys: CsvListSchema.optional(),
 
   neighbourhood_slug: CsvListSchema.optional(),
 
@@ -134,7 +141,9 @@ export const PoisFacetsQuerySchema = z.object({
   rating_max: z.coerce.number().min(0).max(5).optional(),
 
   sort: z.enum(['gatto', 'price_desc', 'price_asc', 'mentions', 'rating'])
-    .default('gatto')
+    .default('gatto'),
+
+  lang: z.enum(['fr', 'en']).default('fr')
 }).strict();
 
 /**
