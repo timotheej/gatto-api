@@ -19,17 +19,24 @@ CREATE OR REPLACE FUNCTION list_collections(
 )
 RETURNS TABLE(
   id UUID,
-  slug TEXT,
   slug_fr TEXT,
   slug_en TEXT,
-  title TEXT,
   title_fr TEXT,
   title_en TEXT,
   city_slug TEXT,
   is_dynamic BOOLEAN,
   rules_json JSONB,
-  theme_type TEXT,
-  season_window TEXT,
+  rules_canon JSONB,
+  source TEXT,
+  content_version INT,
+  temporal_strategy TEXT,
+  active_period JSONB,
+  status TEXT,
+  published_at TIMESTAMPTZ,
+  last_refresh_at TIMESTAMPTZ,
+  auto_refresh_enabled BOOLEAN,
+  refresh_cadence_days INT,
+  metadata JSONB,
   created_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ,
   -- Cover photo
@@ -56,17 +63,24 @@ BEGIN
   RETURN QUERY
   SELECT
     c.id,
-    c.slug,
     c.slug_fr,
     c.slug_en,
-    c.title,
     c.title_fr,
     c.title_en,
     c.city_slug,
     c.is_dynamic,
     c.rules_json,
-    c.theme_type,
-    c.season_window,
+    c.rules_canon,
+    c.source,
+    c.content_version,
+    c.temporal_strategy,
+    c.active_period,
+    c.status,
+    c.published_at,
+    c.last_refresh_at,
+    c.auto_refresh_enabled,
+    c.refresh_cadence_days,
+    c.metadata,
     c.created_at,
     c.updated_at,
     -- Cover photo
@@ -82,7 +96,8 @@ BEGIN
   FROM public.collection c
   LEFT JOIN public.poi_photos p ON p.id = c.cover_photo_id
   WHERE c.city_slug = p_city_slug
-  ORDER BY c.updated_at DESC, c.id ASC
+    AND c.status = 'published'  -- Only return published collections
+  ORDER BY c.published_at DESC NULLS LAST, c.updated_at DESC, c.id ASC
   LIMIT v_limit
   OFFSET v_offset;
 END;
@@ -105,17 +120,24 @@ CREATE OR REPLACE FUNCTION get_collection_pois(
 RETURNS TABLE(
   -- Collection info
   collection_id UUID,
-  collection_slug TEXT,
   collection_slug_fr TEXT,
   collection_slug_en TEXT,
-  collection_title TEXT,
   collection_title_fr TEXT,
   collection_title_en TEXT,
   collection_city_slug TEXT,
   collection_is_dynamic BOOLEAN,
   collection_rules_json JSONB,
-  collection_theme_type TEXT,
-  collection_season_window TEXT,
+  collection_rules_canon JSONB,
+  collection_source TEXT,
+  collection_content_version INT,
+  collection_temporal_strategy TEXT,
+  collection_active_period JSONB,
+  collection_status TEXT,
+  collection_published_at TIMESTAMPTZ,
+  collection_last_refresh_at TIMESTAMPTZ,
+  collection_auto_refresh_enabled BOOLEAN,
+  collection_refresh_cadence_days INT,
+  collection_metadata JSONB,
   collection_created_at TIMESTAMPTZ,
   collection_updated_at TIMESTAMPTZ,
   -- Collection cover photo
@@ -249,17 +271,24 @@ BEGIN
   coll AS (
     SELECT
       c.id,
-      c.slug,
       c.slug_fr,
       c.slug_en,
-      c.title,
       c.title_fr,
       c.title_en,
       c.city_slug,
       c.is_dynamic,
       c.rules_json,
-      c.theme_type,
-      c.season_window,
+      c.rules_canon,
+      c.source,
+      c.content_version,
+      c.temporal_strategy,
+      c.active_period,
+      c.status,
+      c.published_at,
+      c.last_refresh_at,
+      c.auto_refresh_enabled,
+      c.refresh_cadence_days,
+      c.metadata,
       c.created_at,
       c.updated_at,
       c.cover_photo_id,
@@ -272,22 +301,30 @@ BEGIN
     FROM public.collection c
     LEFT JOIN public.poi_photos cp ON cp.id = c.cover_photo_id
     WHERE c.id = v_collection_id
+      AND c.status = 'published'  -- Only return published collections
   )
   -- Main query: Join POIs from collection_item
   SELECT
     -- Collection info
     coll.id,
-    coll.slug,
     coll.slug_fr,
     coll.slug_en,
-    coll.title,
     coll.title_fr,
     coll.title_en,
     coll.city_slug,
     coll.is_dynamic,
     coll.rules_json,
-    coll.theme_type,
-    coll.season_window,
+    coll.rules_canon,
+    coll.source,
+    coll.content_version,
+    coll.temporal_strategy,
+    coll.active_period,
+    coll.status,
+    coll.published_at,
+    coll.last_refresh_at,
+    coll.auto_refresh_enabled,
+    coll.refresh_cadence_days,
+    coll.metadata,
     coll.created_at,
     coll.updated_at,
     coll.cover_photo_id,
