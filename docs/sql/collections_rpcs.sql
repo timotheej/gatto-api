@@ -211,7 +211,7 @@ BEGIN
   -- Find collection by slug (accept both fr and en)
   SELECT id INTO v_collection_id
   FROM public.collection
-  WHERE slug_fr = p_slug OR slug_en = p_slug OR slug = p_slug
+  WHERE slug_fr = p_slug OR slug_en = p_slug
   LIMIT 1;
 
   -- Check if collection exists
