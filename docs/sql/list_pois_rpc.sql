@@ -23,6 +23,11 @@ DROP FUNCTION IF EXISTS list_pois(
   INT, INT, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN, TEXT, INT, INT
 ) CASCADE;
 
+DROP FUNCTION IF EXISTS list_pois(
+  FLOAT[], TEXT, TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[], TEXT[],
+  INT, INT, NUMERIC, NUMERIC, BOOLEAN, BOOLEAN, TEXT, INT, INT, TEXT
+) CASCADE;
+
 CREATE OR REPLACE FUNCTION list_pois(
   p_bbox FLOAT[] DEFAULT NULL,          -- [lat_min, lng_min, lat_max, lng_max] (optional)
   p_city_slug TEXT DEFAULT NULL,        -- city slug (optional)
@@ -43,7 +48,8 @@ CREATE OR REPLACE FUNCTION list_pois(
   p_fresh BOOLEAN DEFAULT NULL,
   p_sort TEXT DEFAULT 'gatto',          -- gatto|rating|mentions|price_asc|price_desc
   p_limit INT DEFAULT 20,               -- max 50
-  p_page INT DEFAULT 1                  -- page number (starts at 1)
+  p_page INT DEFAULT 1,                 -- page number (starts at 1)
+  p_lang TEXT DEFAULT 'fr'              -- language for primary_type_display (fr|en)
 )
 RETURNS TABLE(
   id UUID,
@@ -55,6 +61,7 @@ RETURNS TABLE(
   slug_en TEXT,
   slug_fr TEXT,
   primary_type TEXT,
+  primary_type_display TEXT,
   subcategories TEXT[],
   address_street TEXT,
   city TEXT,
@@ -124,6 +131,7 @@ BEGIN
   norm AS (
     SELECT
       v_city_slug AS city_slug,
+      COALESCE(lower(p_lang), 'fr') AS lang,
       CASE WHEN p_parent_categories IS NULL THEN NULL
            ELSE (SELECT array_agg(lower(trim(x))) FROM unnest(p_parent_categories) AS t(x)) END AS parent_categories_lc,
       CASE WHEN p_type_keys IS NULL THEN NULL
@@ -404,6 +412,10 @@ BEGIN
     s.slug_en::text,
     s.slug_fr::text,
     s.primary_type::text,
+    CASE
+      WHEN (SELECT lang FROM norm) = 'en' THEN COALESCE(pt.label_en, s.primary_type::text)
+      ELSE COALESCE(pt.label_fr, s.primary_type::text)
+    END::text AS primary_type_display,
     s.subcategories,
     s.address_street::text,
     s.city::text,
@@ -442,6 +454,10 @@ BEGIN
     s.mentions_sample,
     s.total_count_window::bigint AS total_count
   FROM sorted s
+  LEFT JOIN public.poi_types pt ON (
+    lower(pt.type_key) = lower(s.primary_type::text)
+    AND pt.is_active = true
+  )
   LIMIT v_limit
   OFFSET v_offset;
 END;

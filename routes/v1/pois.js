@@ -436,7 +436,8 @@ export default async function poisRoutes(fastify) {
         p_fresh: isFresh,
         p_sort: sort,
         p_limit: limit,
-        p_page: page
+        p_page: page,
+        p_lang: lang
       });
 
       if (error) {
@@ -529,6 +530,7 @@ export default async function poisRoutes(fastify) {
           slug: pickLang(poi, lang, 'slug'),
           name: pickLang(poi, lang, 'name'),
           primary_type: poi.primary_type,
+          primary_type_display: poi.primary_type_display,
           subcategories: poi.subcategories || [],
           district: poi.district_slug,
           neighbourhood: poi.neighbourhood_slug,
@@ -643,14 +645,15 @@ export default async function poisRoutes(fastify) {
 
       const poiId = poi.id;
 
-      // Parallel fetch: scores, rating, photos, mentions, tags, percentile
+      // Parallel fetch: scores, rating, photos, mentions, tags, percentile, type_label
       const [
         { data: scores },
         { data: rating },
         photosData,
         { data: mentions },
         { data: enrichedTags },
-        { data: percentileData }
+        { data: percentileData },
+        { data: typeLabel }
       ] = await Promise.all([
         // Scores
         fastify.supabase
@@ -688,7 +691,15 @@ export default async function poisRoutes(fastify) {
           p_poi_id: poiId,
           p_primary_type: poi.primary_type,
           p_city_slug: poi.city_slug
-        })
+        }),
+
+        // Type label (translated)
+        fastify.supabase
+          .from('poi_types')
+          .select(`${lang === 'en' ? 'label_en' : 'label_fr'}`)
+          .eq('type_key', poi.primary_type)
+          .eq('is_active', true)
+          .single()
       ]);
 
       // Build photo blocks
@@ -770,6 +781,7 @@ export default async function poisRoutes(fastify) {
         slug: pickLang(poi, lang, 'slug'),
         name: pickLang(poi, lang, 'name'),
         primary_type: poi.primary_type,
+        primary_type_display: typeLabel?.[lang === 'en' ? 'label_en' : 'label_fr'] || poi.primary_type,
         city: poi.city,
         district: poi.district_slug,
         neighbourhood: poi.neighbourhood_slug,

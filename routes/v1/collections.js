@@ -576,13 +576,7 @@ export default async function collectionsRoutes(fastify) {
           },
           photo,
           price_level: row.poi_price_level,
-          score: Number(row.poi_gatto_score || 0),
-          scores: {
-            gatto: Number(row.poi_gatto_score || 0),
-            digital: Number(row.poi_digital_score || 0),
-            awards_bonus: Number(row.poi_awards_bonus || 0),
-            freshness_bonus: Number(row.poi_freshness_bonus || 0)
-          },
+          has_awards: (row.poi_awards_bonus || 0) > 0,
           rating: {
             google: Number(row.poi_rating_value || 0),
             reviews_count: row.poi_rating_reviews_count || 0
