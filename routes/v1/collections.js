@@ -580,6 +580,7 @@ export default async function collectionsRoutes(fastify) {
           primary_type: row.poi_primary_type,
           primary_type_display: row.poi_primary_type_display,
           subcategories: row.poi_subcategories || [],
+          summary: pickLang(row, lang, 'poi_ai_summary'),
           district: row.poi_district_slug,
           neighbourhood: row.poi_neighbourhood_slug,
           coords: {
