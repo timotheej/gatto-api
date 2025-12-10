@@ -4,6 +4,7 @@
 
 DROP FUNCTION IF EXISTS list_collections(TEXT, INT, INT);
 DROP FUNCTION IF EXISTS get_collection_pois(TEXT, INT, INT);
+DROP FUNCTION IF EXISTS get_collection_pois(TEXT, INT, INT, TEXT);
 
 -- ==================================================
 -- RPC: list_collections
@@ -115,7 +116,8 @@ $$ LANGUAGE plpgsql STABLE;
 CREATE OR REPLACE FUNCTION get_collection_pois(
   p_slug TEXT,                          -- collection slug (fr or en)
   p_limit INT DEFAULT 50,               -- max 100
-  p_page INT DEFAULT 1                  -- page number (starts at 1)
+  p_page INT DEFAULT 1,                 -- page number (starts at 1)
+  p_lang TEXT DEFAULT 'fr'              -- language for primary_type_display (fr|en)
 )
 RETURNS TABLE(
   -- Collection info
@@ -158,6 +160,7 @@ RETURNS TABLE(
   poi_slug_en TEXT,
   poi_slug_fr TEXT,
   poi_primary_type TEXT,
+  poi_primary_type_display TEXT,
   poi_subcategories TEXT[],
   poi_address_street TEXT,
   poi_city TEXT,
@@ -221,6 +224,10 @@ BEGIN
 
   RETURN QUERY
   WITH
+  -- Normalize language parameter
+  norm AS (
+    SELECT COALESCE(lower(p_lang), 'fr') AS lang
+  ),
   -- Scores
   scores AS (
     SELECT
@@ -344,6 +351,10 @@ BEGIN
     p.slug_en::text,
     p.slug_fr::text,
     p.primary_type::text,
+    CASE
+      WHEN n.lang = 'en' THEN COALESCE(pt.label_en, p.primary_type::text)
+      ELSE COALESCE(pt.label_fr, p.primary_type::text)
+    END::text AS primary_type_display,
     p.subcategories,
     p.address_street::text,
     p.city::text,
@@ -389,11 +400,16 @@ BEGIN
     -- Total count
     COUNT(*) OVER() AS total_count
   FROM coll
+  CROSS JOIN norm n
   INNER JOIN public.collection_item ci ON ci.collection_id = coll.id
   INNER JOIN public.poi p ON p.id = ci.poi_id
   LEFT JOIN scores sc ON sc.poi_id = p.id
   LEFT JOIN ratings rt ON rt.poi_id = p.id
   LEFT JOIN mentions mt ON mt.poi_id = p.id
+  LEFT JOIN public.poi_types pt ON (
+    lower(pt.type_key) = lower(p.primary_type::text)
+    AND pt.is_active = true
+  )
   WHERE p.publishable_status = 'eligible'
   ORDER BY ci.position ASC, p.id ASC
   LIMIT v_limit
@@ -429,5 +445,6 @@ ON collection (city_slug, updated_at DESC);
 -- SELECT * FROM get_collection_pois(
 --   p_slug := 'adresses-cocooning-pour-l-automne',
 --   p_limit := 50,
---   p_page := 1
+--   p_page := 1,
+--   p_lang := 'fr'
 -- );

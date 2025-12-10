@@ -335,11 +335,7 @@ export default async function collectionsRoutes(fastify) {
         return {
           id: collection.id,
           slug: pickLang(collection, lang, 'slug'),
-          slug_fr: collection.slug_fr,
-          slug_en: collection.slug_en,
           title: pickLang(collection, lang, 'title'),
-          title_fr: collection.title_fr,
-          title_en: collection.title_en,
           city_slug: collection.city_slug,
           is_dynamic: collection.is_dynamic,
           rules_json: collection.rules_json,
@@ -437,7 +433,8 @@ export default async function collectionsRoutes(fastify) {
       const { data: rows, error } = await fastify.supabase.rpc('get_collection_pois', {
         p_slug: slug,
         p_limit: limit,
-        p_page: page
+        p_page: page,
+        p_lang: lang
       });
 
       if (error) {
@@ -514,11 +511,7 @@ export default async function collectionsRoutes(fastify) {
       const collection = {
         id: firstRow.collection_id,
         slug: pickLang(firstRow, lang, 'collection_slug'),
-        slug_fr: firstRow.collection_slug_fr,
-        slug_en: firstRow.collection_slug_en,
         title: pickLang(firstRow, lang, 'collection_title'),
-        title_fr: firstRow.collection_title_fr,
-        title_en: firstRow.collection_title_en,
         city_slug: firstRow.collection_city_slug,
         is_dynamic: firstRow.collection_is_dynamic,
         rules_json: firstRow.collection_rules_json,
@@ -585,6 +578,7 @@ export default async function collectionsRoutes(fastify) {
           slug: pickLang(row, lang, 'poi_slug'),
           name: pickLang(row, lang, 'poi_name'),
           primary_type: row.poi_primary_type,
+          primary_type_display: row.poi_primary_type_display,
           subcategories: row.poi_subcategories || [],
           district: row.poi_district_slug,
           neighbourhood: row.poi_neighbourhood_slug,
