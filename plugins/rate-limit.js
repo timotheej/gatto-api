@@ -3,7 +3,7 @@ import rateLimit from '@fastify/rate-limit';
 
 async function rateLimitPlugin(fastify) {
   await fastify.register(rateLimit, {
-    max: 30, // Reduced from 100 to 30 requests per minute
+    max: 60, // Increased from 30 to 60 requests per minute
     timeWindow: '1 minute',
     cache: 10000, // Cache 10k IPs
     allowList: process.env.NODE_ENV === 'development' ? ['127.0.0.1', '::1'] : [],
