@@ -14,6 +14,8 @@ import responsesPlugin from "./utils/responses.js";
 import v1Routes from "./routes/v1/index.js";
 import poisRoutes from "./routes/v1/pois.js";
 import poisFacetsRoutes from "./routes/v1/pois/facets.js";
+import autocompleteRoutes from "./routes/v1/autocomplete.js";
+import metricsRoutes from "./routes/v1/metrics.js";
 import collectionsRoutes from "./routes/v1/collections.js";
 import homeRoutes from "./routes/v1/home.js";
 import sitemapRoutes from "./routes/v1/sitemap.js";
@@ -114,6 +116,12 @@ async function build() {
     // POI routes
     await fastify.register(poisRoutes, { prefix: "/v1" });
     await fastify.register(poisFacetsRoutes);
+
+    // Autocomplete route
+    await fastify.register(autocompleteRoutes, { prefix: "/v1" });
+
+    // Metrics route (monitoring)
+    await fastify.register(metricsRoutes, { prefix: "/v1" });
 
     await fastify.register(collectionsRoutes, { prefix: "/v1" });
     await fastify.register(homeRoutes, { prefix: "/v1" });

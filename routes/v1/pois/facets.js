@@ -2,6 +2,7 @@ import {
   PoisFacetsQuerySchema,
   formatZodErrors
 } from '../../../utils/validation.js';
+import { parseSearchQueryCached } from '../../../utils/searchParser.js';
 
 // Utility functions for parameter parsing
 function parseCsvToArray(str, { lowercase = false } = {}) {
@@ -77,13 +78,44 @@ export default async function poisFacetsRoutes(fastify) {
 
         const lang = validatedQuery.lang || fastify.getLang(request);
 
+        // Parse search query if provided
+        let searchTypeKeys = null;
+        if (validatedQuery.q) {
+          try {
+            const parsed = await parseSearchQueryCached(
+              validatedQuery.q,
+              validatedQuery.city,
+              lang,
+              fastify.supabase
+            );
+
+            if (parsed.mode === 'type') {
+              searchTypeKeys = parsed.type_keys;
+              request.log.info({ query: validatedQuery.q, mode: 'type', type_keys: parsed.type_keys }, 'Facets search parsed as type');
+            }
+          } catch (err) {
+            request.log.error('Search parse error in facets:', err);
+            // Continue without search params (graceful degradation)
+          }
+        }
+
         // New hierarchical type filters
         const parentCategories = uniq(
           parseCsvToArray(validatedQuery.parent_categories, { lowercase: true })
         );
-        const typeKeys = uniq(
+
+        // Merge type_keys from search with type_keys from query
+        let typeKeys = uniq(
           parseCsvToArray(validatedQuery.type_keys, { lowercase: true })
         );
+        if (searchTypeKeys && searchTypeKeys.length > 0) {
+          if (typeKeys) {
+            // Merge and deduplicate
+            typeKeys = [...new Set([...typeKeys, ...searchTypeKeys])];
+          } else {
+            typeKeys = searchTypeKeys;
+          }
+        }
 
         const tagsAll = uniq(parseCsvToArray(validatedQuery.tags, { lowercase: true }));
         const tagsAny = uniq(parseCsvToArray(validatedQuery.tags_any, { lowercase: true }));

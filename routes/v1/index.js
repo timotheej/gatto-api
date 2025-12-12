@@ -11,6 +11,8 @@ async function routes(fastify, options) {
         "/v1/pois",
         "/v1/pois/:slug",
         "/v1/pois/facets",
+        "/v1/autocomplete",
+        "/v1/metrics",
         "/v1/collections",
         "/v1/home",
         "/v1/sitemap/pois"

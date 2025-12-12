@@ -46,10 +46,7 @@ CREATE OR REPLACE FUNCTION list_pois(
   p_rating_max NUMERIC DEFAULT NULL,    -- 0-5
   p_awarded BOOLEAN DEFAULT NULL,
   p_fresh BOOLEAN DEFAULT NULL,
-  -- NEW: Name search with fuzzy matching
-  p_name_search TEXT DEFAULT NULL,                -- Search query for POI names (fuzzy matching)
-  p_name_similarity_threshold FLOAT DEFAULT 0.3,  -- Similarity threshold (0-1), default 0.3
-  p_sort TEXT DEFAULT 'gatto',          -- gatto|rating|mentions|price_asc|price_desc|relevance
+  p_sort TEXT DEFAULT 'gatto',          -- gatto|rating|mentions|price_asc|price_desc
   p_limit INT DEFAULT 20,               -- max 50
   p_page INT DEFAULT 1,                 -- page number (starts at 1)
   p_lang TEXT DEFAULT 'fr'              -- language for primary_type_display (fr|en)
@@ -98,8 +95,6 @@ RETURNS TABLE(
   -- Mentions
   mentions_count INT,
   mentions_sample JSONB,
-  -- NEW: Name search relevance
-  name_relevance_score FLOAT,
   -- Pagination
   total_count BIGINT
 ) AS $$
@@ -159,10 +154,7 @@ BEGIN
       CASE WHEN p_price_max BETWEEN 1 AND 4 THEN p_price_max ELSE NULL END AS price_max,
       CASE WHEN p_rating_min BETWEEN 0 AND 5 THEN p_rating_min ELSE NULL END AS rating_min,
       CASE WHEN p_rating_max BETWEEN 0 AND 5 THEN p_rating_max ELSE NULL END AS rating_max,
-      p_bbox AS bbox_valid,
-      -- NEW: Normalize name search query for accent-insensitive matching
-      CASE WHEN p_name_search IS NOT NULL THEN normalize_for_search(p_name_search) ELSE NULL END AS name_search_normalized,
-      p_name_similarity_threshold AS name_threshold
+      p_bbox AS bbox_valid
   ),
 
   -- 1b) Expansion des filtres via poi_types (hiérarchie)
@@ -229,28 +221,6 @@ BEGIN
       WHERE ai_decision = 'ACCEPT'
     ) sub
     GROUP BY poi_id
-  ),
-
-  -- 3a) NEW: Name search matching (fuzzy with trigram similarity)
-  -- Only executed if p_name_search is provided
-  -- Computes similarity scores across all name fields (name, name_fr, name_en)
-  name_matches AS (
-    SELECT
-      p.id AS poi_id,
-      GREATEST(
-        similarity(p.name_normalized, n.name_search_normalized),
-        similarity(p.name_fr_normalized, n.name_search_normalized),
-        similarity(p.name_en_normalized, n.name_search_normalized)
-      )::numeric AS name_similarity_score
-    FROM public.poi p
-    CROSS JOIN norm n
-    WHERE n.name_search_normalized IS NOT NULL
-      AND p.publishable_status = 'eligible'
-      AND (
-        similarity(p.name_normalized, n.name_search_normalized) > n.name_threshold
-        OR similarity(p.name_fr_normalized, n.name_search_normalized) > n.name_threshold
-        OR similarity(p.name_en_normalized, n.name_search_normalized) > n.name_threshold
-      )
   ),
 
   -- 3b) Type matching (seulement si des filtres de type sont fournis)
@@ -320,8 +290,6 @@ BEGIN
       ), '{}'::text[]) AS awards_providers,
       -- Type relevance score (optimisé avec LEFT JOIN)
       COALESCE(MAX(tm.match_score), 0.0)::numeric AS type_relevance_score,
-      -- NEW: Name relevance score (0 if no name search)
-      COALESCE(MAX(nm.name_similarity_score), 0.0)::numeric AS name_relevance_score,
       -- métriques
       sc.sc_gatto_score     AS gatto_score,
       sc.sc_digital_score   AS digital_score,
@@ -337,7 +305,6 @@ BEGIN
     LEFT JOIN ratings  rt ON rt.poi_id = p.id
     LEFT JOIN mentions mt ON mt.poi_id = p.id
     LEFT JOIN type_matches tm ON tm.poi_id = p.id
-    LEFT JOIN name_matches nm ON nm.poi_id = p.id  -- NEW: join name search results
     WHERE p.publishable_status = 'eligible'
     GROUP BY
       p.id, p.google_place_id, p.city_slug, p.name, p.name_en, p.name_fr,
@@ -377,8 +344,6 @@ BEGIN
       )
       -- Legacy subcategory filter (kept for backward compatibility)
       AND (n.subcategories_lc IS NULL OR (b.subcategories_lc IS NOT NULL AND b.subcategories_lc && n.subcategories_lc))
-      -- NEW: Name search filter - only include POIs that match the name query
-      AND (n.name_search_normalized IS NULL OR b.name_relevance_score > 0)
       AND (n.price_min IS NULL OR (
         CASE b.price_level
           WHEN 'PRICE_LEVEL_INEXPENSIVE' THEN 1
@@ -430,18 +395,10 @@ BEGIN
           END, 0)::numeric
         WHEN 'mentions'   THEN COALESCE(f.mentions_count, 0)::numeric
         WHEN 'rating'     THEN COALESCE(f.rating_value, 0)::numeric
-        -- NEW: Sort by name relevance (similarity score * 100)
-        WHEN 'relevance'  THEN COALESCE(f.name_relevance_score, 0)::numeric * 100
         ELSE COALESCE(f.gatto_score, 0)::numeric
       END AS sort_key
     FROM filtered f
-    ORDER BY
-      -- NEW: If name search is active, prioritize by name relevance first
-      CASE WHEN f.name_relevance_score > 0 THEN f.name_relevance_score ELSE 0 END DESC,
-      -- Then by the chosen sort_key
-      sort_key DESC NULLS LAST,
-      -- Stable sort with id
-      f.id ASC
+    ORDER BY sort_key DESC NULLS LAST, f.id ASC
   )
 
   -- 7) Return results with pagination
@@ -495,8 +452,6 @@ BEGIN
     s.rating_reviews_count,
     s.mentions_count,
     s.mentions_sample,
-    -- NEW: Name search relevance score
-    s.name_relevance_score::float,
     s.total_count_window::bigint AS total_count
   FROM sorted s
   LEFT JOIN public.poi_types pt ON (

@@ -70,7 +70,12 @@ export const PoisQuerySchema = z.object({
 
   rating_max: z.coerce.number().min(0).max(5).optional(),
 
-  sort: z.enum(['gatto', 'price_desc', 'price_asc', 'mentions', 'rating'])
+  // Search parameters
+  q: z.string().min(1).max(200).optional(),
+
+  name_similarity_threshold: z.coerce.number().min(0).max(1).default(0.3).optional(),
+
+  sort: z.enum(['gatto', 'price_desc', 'price_asc', 'mentions', 'rating', 'relevance'])
     .default('gatto'),
 
   limit: z.coerce.number().int().min(1).max(50).default(20),
@@ -84,6 +89,19 @@ export const PoisQuerySchema = z.object({
     {
       message: "Either 'bbox' or 'city' parameter must be provided",
       path: ['bbox']
+    }
+  )
+  .refine(
+    (data) => {
+      // If sort is 'relevance', query must be provided
+      if (data.sort === 'relevance' && !data.q) {
+        return false;
+      }
+      return true;
+    },
+    {
+      message: "Query parameter 'q' is required when sort='relevance'",
+      path: ['q']
     }
   );
 
@@ -140,7 +158,12 @@ export const PoisFacetsQuerySchema = z.object({
 
   rating_max: z.coerce.number().min(0).max(5).optional(),
 
-  sort: z.enum(['gatto', 'price_desc', 'price_asc', 'mentions', 'rating'])
+  // Search parameters
+  q: z.string().min(1).max(200).optional(),
+
+  name_similarity_threshold: z.coerce.number().min(0).max(1).default(0.3).optional(),
+
+  sort: z.enum(['gatto', 'price_desc', 'price_asc', 'mentions', 'rating', 'relevance'])
     .default('gatto'),
 
   lang: z.enum(['fr', 'en']).default('fr')

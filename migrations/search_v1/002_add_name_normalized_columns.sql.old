@@ -1,0 +1,112 @@
+-- Migration 002: Add normalized name columns and trigram indexes
+-- Date: 2025-12-11
+-- Description: Create normalized columns for accent-insensitive search and trigram indexes
+
+-- ============================================================================
+-- HELPER FUNCTION: Normalize text for search
+-- ============================================================================
+-- This function:
+-- 1. Converts to lowercase
+-- 2. Removes accents using unaccent()
+-- 3. Normalizes apostrophes (' and ' → ')
+-- 4. Returns clean text for similarity matching
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION normalize_for_search(input_text TEXT)
+RETURNS TEXT AS $$
+  SELECT lower(
+    unaccent(
+      translate(
+        COALESCE(input_text, ''),
+        chr(8217) || chr(8216),  -- U+2019 ' and U+2018 ' (smart quotes)
+        chr(39) || chr(39)        -- U+0027 ' (standard apostrophe)
+      )
+    )
+  )
+$$ LANGUAGE SQL IMMUTABLE;
+
+-- Test the function:
+-- SELECT normalize_for_search('Café de l''Opéra');
+-- Expected: "cafe de l'opera"
+
+
+-- ============================================================================
+-- ADD NORMALIZED COLUMNS (Generated/Computed columns)
+-- ============================================================================
+-- These columns are automatically maintained by PostgreSQL
+-- whenever the source column (name, name_fr, name_en) changes
+-- ============================================================================
+
+-- Normalized version of 'name' column
+ALTER TABLE poi
+ADD COLUMN IF NOT EXISTS name_normalized TEXT
+GENERATED ALWAYS AS (normalize_for_search(name)) STORED;
+
+-- Normalized version of 'name_fr' column
+ALTER TABLE poi
+ADD COLUMN IF NOT EXISTS name_fr_normalized TEXT
+GENERATED ALWAYS AS (normalize_for_search(name_fr)) STORED;
+
+-- Normalized version of 'name_en' column
+ALTER TABLE poi
+ADD COLUMN IF NOT EXISTS name_en_normalized TEXT
+GENERATED ALWAYS AS (normalize_for_search(name_en)) STORED;
+
+
+-- ============================================================================
+-- CREATE TRIGRAM INDEXES (GIN type)
+-- ============================================================================
+-- These indexes enable fast fuzzy matching using similarity() function
+-- CONCURRENTLY option prevents table locks (important for production)
+-- GIN (Generalized Inverted Index) is optimized for trigram operations
+-- ============================================================================
+
+-- Index on name_normalized (main search field)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS poi_name_normalized_trgm_idx
+ON poi USING GIN (name_normalized gin_trgm_ops);
+
+-- Index on name_fr_normalized (French name search)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS poi_name_fr_normalized_trgm_idx
+ON poi USING GIN (name_fr_normalized gin_trgm_ops);
+
+-- Index on name_en_normalized (English name search)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS poi_name_en_normalized_trgm_idx
+ON poi USING GIN (name_en_normalized gin_trgm_ops);
+
+
+-- ============================================================================
+-- VERIFICATION QUERIES
+-- ============================================================================
+
+-- 1. Check columns were created
+-- SELECT column_name, data_type, is_generated, generation_expression
+-- FROM information_schema.columns
+-- WHERE table_name = 'poi'
+--   AND column_name LIKE '%normalized%';
+
+-- 2. Check indexes were created
+-- SELECT indexname, indexdef
+-- FROM pg_indexes
+-- WHERE tablename = 'poi'
+--   AND indexname LIKE '%trgm%';
+
+-- 3. Test normalization on actual data
+-- SELECT
+--   name,
+--   name_normalized,
+--   name_fr_normalized,
+--   name_en_normalized
+-- FROM poi
+-- WHERE name LIKE '%Café%'
+-- LIMIT 5;
+
+-- 4. Test fuzzy search performance
+-- EXPLAIN ANALYZE
+-- SELECT
+--   name,
+--   similarity(name_normalized, 'comptoir') AS sim
+-- FROM poi
+-- WHERE similarity(name_normalized, 'comptoir') > 0.3
+-- ORDER BY sim DESC
+-- LIMIT 20;
+-- Expected: Uses "Bitmap Heap Scan" with trigram index, < 50ms

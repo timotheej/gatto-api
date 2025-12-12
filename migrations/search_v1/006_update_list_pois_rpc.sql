@@ -1,0 +1,87 @@
+-- Migration 006: Update list_pois RPC to support name search
+-- Date: 2025-12-11
+-- Description: Add fuzzy name search capability to list_pois function
+--
+-- Changes:
+--   - Add p_name_search parameter (TEXT)
+--   - Add p_name_similarity_threshold parameter (FLOAT, default 0.3)
+--   - Add name_relevance_score to return type
+--   - Add 'relevance' sort option
+--   - Implement fuzzy matching with trigram similarity
+--   - Priority sort: name_relevance > sort_key when name search active
+--
+-- Dependencies:
+--   - Requires migrations 001-005 to be applied first
+--   - Requires normalize_for_search() function
+--   - Requires name_normalized columns with trigram indexes
+
+-- ============================================================================
+-- IMPORTANT: This replaces the entire list_pois function
+-- ============================================================================
+--
+-- EXECUTION INSTRUCTIONS FOR SUPABASE SQL EDITOR:
+-- 1. Open the file: docs/sql/list_pois_rpc.sql
+-- 2. Copy the ENTIRE content (all ~800 lines)
+-- 3. Paste it in Supabase SQL Editor and execute
+--
+-- OR if running locally with psql:
+-- \i docs/sql/list_pois_rpc.sql
+--
+-- The list_pois function has been updated with:
+--   - p_name_search TEXT parameter for fuzzy name search
+--   - p_name_similarity_threshold FLOAT parameter (default 0.3)
+--   - name_relevance_score in return type
+--   - 'relevance' sort option
+--
+-- ============================================================================
+
+-- ============================================================================
+-- VERIFICATION
+-- ============================================================================
+
+-- Test 1: Name search (exact match)
+-- SELECT name, name_relevance_score
+-- FROM list_pois(
+--   p_city_slug := 'paris',
+--   p_name_search := 'Le Comptoir',
+--   p_limit := 10
+-- );
+-- Expected: POIs with "Comptoir" in name, sorted by similarity
+
+-- Test 2: Name search (typo)
+-- SELECT name, name_relevance_score
+-- FROM list_pois(
+--   p_city_slug := 'paris',
+--   p_name_search := 'comptoar',  -- typo
+--   p_limit := 5
+-- );
+-- Expected: Still returns "Comptoir" POIs (fuzzy matching)
+
+-- Test 3: Name search + filters
+-- SELECT name, district_slug, name_relevance_score
+-- FROM list_pois(
+--   p_city_slug := 'paris',
+--   p_name_search := 'comptoir',
+--   p_district_slugs := ARRAY['11e-arrondissement'],
+--   p_limit := 10
+-- );
+-- Expected: Only "Comptoir" POIs in 11e arrondissement
+
+-- Test 4: Performance test
+-- EXPLAIN (ANALYZE, BUFFERS)
+-- SELECT *
+-- FROM list_pois(
+--   p_city_slug := 'paris',
+--   p_name_search := 'restaurant',
+--   p_limit := 20
+-- );
+-- Expected: Uses trigram index, < 100ms
+
+-- Test 5: Backward compatibility (no name search)
+-- SELECT COUNT(*)
+-- FROM list_pois(
+--   p_city_slug := 'paris',
+--   p_type_keys := ARRAY['italian_restaurant'],
+--   p_limit := 20
+-- );
+-- Expected: Works exactly as before (no regression)

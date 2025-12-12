@@ -5,6 +5,7 @@ import {
   PoiDetailQuerySchema,
   formatZodErrors
 } from '../../utils/validation.js';
+import { parseSearchQueryCached } from '../../utils/searchParser.js';
 
 // ==== CACHE CONFIGURATION ====
 
@@ -336,8 +337,38 @@ export default async function poisRoutes(fastify) {
         rating_max,
         sort,
         limit,
-        page
+        page,
+        q,
+        name_similarity_threshold
       } = validatedQuery;
+
+      // Parse search query if provided
+      let searchParams = {
+        parentCategories: null,
+        typeKeys: null,
+        nameSearch: null,
+        nameSimilarityThreshold: name_similarity_threshold || 0.3
+      };
+
+      if (q) {
+        try {
+          const parsed = await parseSearchQueryCached(q, city, lang, fastify.supabase);
+
+          if (parsed.mode === 'type') {
+            // Type query: merge with existing type filters
+            searchParams.typeKeys = parsed.type_keys;
+            fastify.log.info({ query: q, mode: 'type', type_keys: parsed.type_keys }, 'Search parsed as type');
+          } else if (parsed.mode === 'name') {
+            // Name query: fuzzy name search
+            searchParams.nameSearch = parsed.name_search;
+            searchParams.nameSimilarityThreshold = parsed.name_similarity_threshold;
+            fastify.log.info({ query: q, mode: 'name', threshold: parsed.name_similarity_threshold }, 'Search parsed as name');
+          }
+        } catch (err) {
+          fastify.log.error('Search parse error:', err);
+          // Continue without search params (graceful degradation)
+        }
+      }
 
       // Parse bbox if provided (optional)
       const bboxArray = bbox ? parseBbox(bbox) : null;
@@ -368,7 +399,9 @@ export default async function poisRoutes(fastify) {
         sort,
         limit,
         page,
-        lang
+        lang,
+        q,
+        name_similarity_threshold
       });
 
       const cached = poisCache.get(cacheKey);
@@ -382,8 +415,19 @@ export default async function poisRoutes(fastify) {
       fastify.log.info({ cacheKey, endpoint: '/v1/pois' }, 'Cache MISS');
 
       // Parse parameters (limit and page are already validated by Zod)
-      const parentCategories = toArr(parent_categories);
-      const typeKeys = toArr(type_keys);
+      const parentCategories = toArr(parent_categories) || searchParams.parentCategories;
+
+      // Merge type_keys from search with type_keys from query
+      let typeKeys = toArr(type_keys);
+      if (searchParams.typeKeys && searchParams.typeKeys.length > 0) {
+        if (typeKeys) {
+          // Merge and deduplicate
+          typeKeys = [...new Set([...typeKeys, ...searchParams.typeKeys])];
+        } else {
+          typeKeys = searchParams.typeKeys;
+        }
+      }
+
       const primaryTypes = toArr(primary_type);
       const subcategories = toArr(subcategory);
       const districtSlugs = toArr(district_slug);
@@ -434,6 +478,8 @@ export default async function poisRoutes(fastify) {
         p_rating_max: ratingMaxBound,
         p_awarded: isAwarded,
         p_fresh: isFresh,
+        p_name_search: searchParams.nameSearch,
+        p_name_similarity_threshold: searchParams.nameSimilarityThreshold,
         p_sort: sort,
         p_limit: limit,
         p_page: page,
@@ -550,7 +596,11 @@ export default async function poisRoutes(fastify) {
           },
           mentions_count: poi.mentions_count || 0,
           mentions_sample: mentionsSample,
-          tags_flat: poi.tags_flat || []
+          tags_flat: poi.tags_flat || [],
+          // Name relevance score (only if name search is active)
+          ...(searchParams.nameSearch && poi.name_relevance_score !== undefined ? {
+            name_relevance_score: Number(poi.name_relevance_score)
+          } : {})
         };
       }));
 
